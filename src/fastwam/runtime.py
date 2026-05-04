@@ -330,8 +330,23 @@ def create_fastwam_idm(
     )
 
 
+def _instantiate_after_rank0(target_cfg, **kwargs):
+    if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+        return instantiate(target_cfg, **kwargs)
+
+    rank = torch.distributed.get_rank()
+    obj = None
+    if rank == 0:
+        obj = instantiate(target_cfg, **kwargs)
+    torch.distributed.barrier()
+    if rank != 0:
+        obj = instantiate(target_cfg, **kwargs)
+    torch.distributed.barrier()
+    return obj
+
+
 def build_datasets(data_cfg: DictConfig):
-    train_ds = instantiate(data_cfg.train)
+    train_ds = _instantiate_after_rank0(data_cfg.train)
     if data_cfg.get("val") is None:
         val_ds = train_ds
     else:
@@ -340,7 +355,7 @@ def build_datasets(data_cfg: DictConfig):
         val_stats_path = data_cfg.val.get("pretrained_norm_stats")
         pretrained_norm_stats = val_stats_path or train_stats_path or default_stats_path
         logger.info("Building val dataset with pretrained_norm_stats: %s", pretrained_norm_stats)
-        val_ds = instantiate(data_cfg.val, pretrained_norm_stats=pretrained_norm_stats)
+        val_ds = _instantiate_after_rank0(data_cfg.val, pretrained_norm_stats=pretrained_norm_stats)
     return train_ds, val_ds
 
 

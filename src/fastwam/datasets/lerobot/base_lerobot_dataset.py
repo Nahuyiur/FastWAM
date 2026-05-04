@@ -1,3 +1,4 @@
+import json
 import torch
 import numpy as np
 from pathlib import Path
@@ -33,6 +34,7 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
 
         # sampling
         global_sample_stride: int = 1,
+        variant_type: Optional[str] = None,
     ):
         assert len(dataset_dirs) > 0, "At least one dataset directory is required"
         assert past_action_size == 0
@@ -45,6 +47,7 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
         self.past_action_size = past_action_size
         self.obs_size = obs_size
         self.processor = None  # Will be set externally
+        self.variant_type = variant_type
         metas = []
         for ds_dir in dataset_dirs:
             ds_root = Path(ds_dir)
@@ -86,20 +89,20 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
             delta_timestamps[meta["lerobot_key"]] = [(t * global_sample_stride) / fps for t in range(-past_action_size, -past_action_size + action_size)]
 
         episodes = {}
-        if val_set_proportion < 1e-6:
-            for meta in metas:
-                episodes.update({meta.repo_id: list(range(meta.total_episodes))})
-        else:
-            for meta in metas:
-                split_idx = int(meta.total_episodes * (1 - val_set_proportion))
-                # random shuffle episode indices before splitting
-                episode_indices = list(range(meta.total_episodes))
+        for meta in metas:
+            episode_indices = self._candidate_episode_indices(Path(meta.root), meta.total_episodes, variant_type)
+            if val_set_proportion < 1e-6:
+                selected_indices = episode_indices
+            else:
+                split_idx = int(len(episode_indices) * (1 - val_set_proportion))
                 rng = np.random.default_rng(seed)
-                rng.shuffle(episode_indices)
+                shuffled_indices = list(episode_indices)
+                rng.shuffle(shuffled_indices)
                 if self.is_training_set:
-                    episodes.update({meta.repo_id: [episode_indices[i] for i in range(split_idx)]})
+                    selected_indices = [shuffled_indices[i] for i in range(split_idx)]
                 else:
-                    episodes.update({meta.repo_id: [episode_indices[i] for i in range(split_idx, meta.total_episodes)]})
+                    selected_indices = [shuffled_indices[i] for i in range(split_idx, len(shuffled_indices))]
+            episodes.update({meta.repo_id: selected_indices})
 
         self.multi_dataset = MultiLeRobotDataset(
             dataset_dirs=self.dataset_dirs,
@@ -122,6 +125,39 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
             "from": torch.cat([dataset["from"] for dataset in episode_data_index]),
             "to": torch.cat([dataset["to"] for dataset in episode_data_index]),
         }
+
+
+    def _candidate_episode_indices(
+        self,
+        dataset_root: Path,
+        total_episodes: int,
+        variant_type: Optional[str],
+    ) -> list[int]:
+        if variant_type is None:
+            return list(range(total_episodes))
+
+        metadata_path = dataset_root / "rlbench_episode_metadata.jsonl"
+        if not metadata_path.exists():
+            raise FileNotFoundError(
+                f"variant_type={variant_type!r} requires RLBench metadata file: {metadata_path}"
+            )
+
+        episode_indices = []
+        with metadata_path.open("r", encoding="utf-8") as f:
+            for line_idx, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                if record.get("variant_type") != variant_type:
+                    continue
+                if "lerobot_episode_index" not in record:
+                    raise KeyError(f"Missing lerobot_episode_index at {metadata_path}:{line_idx}")
+                episode_indices.append(int(record["lerobot_episode_index"]))
+
+        if not episode_indices:
+            raise ValueError(f"No episodes found for variant_type={variant_type!r} in {metadata_path}")
+        return episode_indices
 
     def _get_action(self, meta, lerobot_sample) -> torch.Tensor:
         key, lerobot_key, raw_shape = meta["key"], meta["lerobot_key"], meta["raw_shape"]
