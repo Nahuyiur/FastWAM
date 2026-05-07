@@ -3,10 +3,11 @@ set -euo pipefail
 
 if [[ $# -gt 1 ]]; then
   echo "Usage: bash scripts/train_rlbench_4gpu.sh [task_name]" >&2
+  echo "  category tasks: rlbench_original_3cam224_1e-4 | rlbench_color_3cam224_1e-4 | rlbench_shape_3cam224_1e-4 | rlbench_color_shape_3cam224_1e-4" >&2
   exit 1
 fi
 
-TASK_NAME="${1:-rlbench_uncond_3cam224_1e-4}"
+TASK_NAME="${1:-rlbench_original_3cam224_1e-4}"
 NPROC_PER_NODE=4
 
 FASTWAM_ROOT="/mnt/world_foundational_model/yuhan/FastWAM"
