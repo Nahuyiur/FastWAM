@@ -1,7 +1,7 @@
 train:
   _target_: fastwam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
   dataset_dirs:
-    - /mnt/world_foundational_model/yuhan/data/rlbench_pick_lift_color_shape/lerobot/train
+    - ${oc.env:RLBENCH_LEROBOT_TRAIN_DIR,/mnt/yuhan/data/rlbench_pick_lift_color_shape/lerobot/train}
   shape_meta:
     images:
       - key: front
@@ -60,7 +60,7 @@ train:
 val:
   _target_: fastwam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
   dataset_dirs:
-    - /mnt/world_foundational_model/yuhan/data/rlbench_pick_lift_color_shape/lerobot/test
+    - ${oc.env:RLBENCH_LEROBOT_TEST_DIR,/mnt/yuhan/data/rlbench_pick_lift_color_shape/lerobot/test}
   shape_meta:
     images:
       - key: front

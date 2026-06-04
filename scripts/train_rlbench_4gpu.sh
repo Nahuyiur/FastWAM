@@ -10,31 +10,36 @@ fi
 TASK_NAME="${1:-rlbench_original_3cam224_1e-4}"
 NPROC_PER_NODE=4
 
-FASTWAM_ROOT="/mnt/world_foundational_model/yuhan/FastWAM"
-CONDA_ROOT="/mnt/world_foundational_model/yuhan/miniconda3"
-CONDA_ENV_NAME="fastwam"
-ACTION_DIT_CKPT="checkpoints/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FASTWAM_ROOT="${FASTWAM_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 ACTION_DIT_CKPT_NAME="ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt"
 MODEL_CONFIG="configs/model/fastwam.yaml"
 
 cd "${FASTWAM_ROOT}"
 
-if [[ ! -f "${CONDA_ROOT}/etc/profile.d/conda.sh" ]]; then
-  echo "Missing conda activation script: ${CONDA_ROOT}/etc/profile.d/conda.sh" >&2
+# shellcheck disable=SC1091
+source "${FASTWAM_ROOT}/scripts/setup_yuhan_paths.sh"
+
+if [[ ! -f "${CONDA_ROOT}/bin/activate" ]]; then
+  echo "Missing conda activation script: ${CONDA_ROOT}/bin/activate" >&2
+  exit 1
+fi
+
+if [[ ! -d "${FASTWAM_CONDA_ENV}" ]]; then
+  echo "Missing FastWAM conda env: ${FASTWAM_CONDA_ENV}" >&2
   exit 1
 fi
 
 # Some conda package activation hooks assume nounset is disabled.
 set +u
 # shellcheck disable=SC1091
-source "${CONDA_ROOT}/etc/profile.d/conda.sh"
-conda activate "${CONDA_ENV_NAME}"
+source "${CONDA_ROOT}/bin/activate" "${FASTWAM_CONDA_ENV}"
 set -u
 
-# shellcheck disable=SC1091
-source "${FASTWAM_ROOT}/scripts/setup_yuhan_paths.sh"
 ACTION_DIT_CKPT="${FASTWAM_PRETRAIN_ROOT}/${ACTION_DIT_CKPT_NAME}"
 export ACCELERATE_CONFIG_FILE="${ACCELERATE_CONFIG_FILE:-scripts/accelerate_configs/accelerate_zero2_ds.yaml}"
+
+bash scripts/check_jinshan_fastwam_ready.sh --train
 
 if [[ ! -f "${ACTION_DIT_CKPT}" ]]; then
   echo "[setup] Missing ${ACTION_DIT_CKPT}; preprocessing ActionDiT backbone."

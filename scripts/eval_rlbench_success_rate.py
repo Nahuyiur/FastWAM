@@ -32,7 +32,8 @@ from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
-YUHAN_ROOT = Path(os.environ.get("YUHAN_ROOT", "/mnt/world_foundational_model/yuhan"))
+YUHAN_ROOT = Path(os.environ.get("YUHAN_ROOT", "/mnt/yuhan"))
+CONDA_ROOT = Path(os.environ.get("CONDA_ROOT", "/mnt/miniconda3"))
 DATA_ROOT = Path(
     os.environ.get(
         "RLBENCH_PICK_LIFT_ROOT",
@@ -44,14 +45,14 @@ RLBENCH_ROOT = Path(os.environ.get("RLBENCH_ROOT", YUHAN_ROOT / "RLBench"))
 PYREP_SITE = Path(
     os.environ.get(
         "RLBENCH_PYREP_SITE",
-        str(YUHAN_ROOT / "miniconda3/envs/gembench/lib/python3.10/site-packages"),
+        str(CONDA_ROOT / "envs/gembench/lib/python3.10/site-packages"),
     )
 )
 
 for path in [
     PROJECT_ROOT,
     SRC_ROOT,
-    YUHAN_ROOT / "rlbench_lerobot_tools/stubs",
+    Path(os.environ.get("RLBENCH_STUB_ROOT", str(YUHAN_ROOT / "rlbench_lerobot_tools/stubs"))),
     RLBENCH_ROOT,
     PYREP_SITE,
 ]:

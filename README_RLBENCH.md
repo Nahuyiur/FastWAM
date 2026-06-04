@@ -5,17 +5,27 @@ This repository includes a small, non-invasive RLBench setup for the
 
 ## Environment
 
-All scripts default to the shared machine layout:
+The scripts now default to the current `jinshan_pub` layout:
 
-- FastWAM root: `/mnt/world_foundational_model/yuhan/FastWAM`
-- Conda env: `/mnt/world_foundational_model/yuhan/miniconda3/envs/fastwam`
-- Cache/temp root: `/mnt/world_foundational_model/yuhan/cache/FastWAM`
-- Pretrained weights: `/mnt/world_foundational_model/yuhan/pretrained_weights/FastWAM`
-- RLBench checkout: `/mnt/world_foundational_model/yuhan/RLBench`
+- FastWAM root: `/mnt/yuhan/FastWAM`
+- Conda root: `/mnt/miniconda3`
+- Conda env: `/mnt/miniconda3/envs/fastwam`
+- Cache/temp root: `/mnt/yuhan/cache/FastWAM`
+- Pretrained weights: `/mnt/yuhan/FastWAM/checkpoints`
+- GEMBench dataset: `/mnt/yuhan/datasets/GEMBench`
+- RLBench checkout: `/mnt/yuhan/RLBench`
 
 Run scripts source `scripts/setup_yuhan_paths.sh` so Hugging Face, Torch,
-W&B, XDG, and temporary files stay under `/mnt/world_foundational_model/yuhan`
-instead of `/tmp`.
+W&B, XDG, and temporary files stay under `/mnt/yuhan` instead of `/tmp`.
+
+Before launching training or simulator evaluation, run:
+
+```bash
+bash scripts/check_jinshan_fastwam_ready.sh --all
+```
+
+This performs path and asset checks only. It does not start training, does not
+start CoppeliaSim, and does not touch GPUs.
 
 ## Training
 

@@ -9,6 +9,7 @@ NUM_MACHINES="${NNODES:-1}"
 MACHINE_RANK="${NODE_RANK:-0}"
 MAIN_PROCESS_IP="${MASTER_ADDR:-127.0.0.1}"
 MAIN_PROCESS_PORT="${MASTER_PORT:-29500}"
+ACCELERATE_CONFIG_FILE="${ACCELERATE_CONFIG_FILE:-scripts/accelerate_configs/accelerate_zero2_ds.yaml}"
 
 is_integer() {
   [[ "${1}" =~ ^[0-9]+$ ]]
@@ -108,7 +109,7 @@ fi
 echo "[launch] nproc_per_node=${NPROC_PER_NODE} num_machines=${NUM_MACHINES} machine_rank=${MACHINE_RANK} run_id=${RUN_ID}"
 
 accelerate launch \
-  --config_file scripts/accelerate_configs/accelerate_zero2_ds.yaml \
+  --config_file "${ACCELERATE_CONFIG_FILE}" \
   --num_processes "${NPROC_PER_NODE}" \
   scripts/train.py \
   "output_dir=./runs/${TASK_BASENAME}/${RUN_ID}" \
