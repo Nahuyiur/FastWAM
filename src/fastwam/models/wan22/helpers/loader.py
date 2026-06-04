@@ -138,6 +138,31 @@ def _resolve_configs(model_id: str, tokenizer_model_id: str, redirect_common_fil
     return dit_config, text_config, vae_config, tokenizer_config
 
 
+def load_wan22_ti2v_5b_vae(
+    device: str = "cuda",
+    torch_dtype: torch.dtype = torch.bfloat16,
+    model_id: str = "Wan-AI/Wan2.2-TI2V-5B",
+    tokenizer_model_id: str = "Wan-AI/Wan2.1-T2V-1.3B",
+    redirect_common_files: bool = True,
+) -> tuple[WanVideoVAE38, str]:
+    logger.info("Loading Wan2.2-TI2V-5B VAE only...")
+    start = time.time()
+    _, _, vae_config, _ = _resolve_configs(
+        model_id=model_id,
+        tokenizer_model_id=tokenizer_model_id,
+        redirect_common_files=redirect_common_files,
+    )
+    vae_config.download_if_necessary()
+    vae: WanVideoVAE38 = _load_registered_model(
+        vae_config.path,
+        "wan_video_vae",
+        torch_dtype=torch_dtype,
+        device=device,
+    )
+    logger.info("Finished loading Wan2.2-TI2V-5B VAE in %.2f seconds.", time.time() - start)
+    return vae, str(vae_config.path)
+
+
 def load_wan22_ti2v_5b_components(
     device: str = "cuda",
     torch_dtype: torch.dtype = torch.bfloat16,

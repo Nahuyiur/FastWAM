@@ -1,0 +1,51 @@
+train:
+  _target_: fastwam.datasets.gembench.dataset.GEMBenchKeystepsDataset
+  root: ${oc.env:GEMBENCH_ROOT,/mnt/yuhan/datasets/GEMBench}
+  split: train
+  subset: keysteps_bbox
+  seed: seed0
+  taskvars: null
+  skip_missing_taskvars: true
+  num_video_frames: 9
+  action_horizon: 8
+  video_size: [224, 672]
+  camera_order: [front, wrist, left_shoulder]
+  val_set_proportion: 0.02
+  is_training_set: true
+  split_seed: 42
+  max_episodes_per_taskvar: null
+  text_embedding_cache_dir: ./data/text_embeds_cache/gembench_keysteps_bbox
+  context_len: 128
+  allow_missing_text_embeds: false
+  pretrained_norm_stats: ./data/gembench_keysteps_bbox_dataset_stats.json
+  norm_default_mode: z-score
+  stats_scan_limit: 0
+  processor:
+    action_output_dim: 8
+    proprio_output_dim: 8
+
+val:
+  _target_: fastwam.datasets.gembench.dataset.GEMBenchKeystepsDataset
+  root: ${oc.env:GEMBENCH_ROOT,/mnt/yuhan/datasets/GEMBench}
+  split: train
+  subset: keysteps_bbox
+  seed: seed0
+  taskvars: null
+  skip_missing_taskvars: true
+  num_video_frames: 9
+  action_horizon: 8
+  video_size: [224, 672]
+  camera_order: [front, wrist, left_shoulder]
+  val_set_proportion: 0.02
+  is_training_set: false
+  split_seed: 42
+  max_episodes_per_taskvar: null
+  text_embedding_cache_dir: ./data/text_embeds_cache/gembench_keysteps_bbox
+  context_len: 128
+  allow_missing_text_embeds: false
+  pretrained_norm_stats: ./data/gembench_keysteps_bbox_dataset_stats.json
+  norm_default_mode: z-score
+  stats_scan_limit: 0
+  processor:
+    action_output_dim: 8
+    proprio_output_dim: 8

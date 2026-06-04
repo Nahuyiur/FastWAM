@@ -275,67 +275,107 @@ class FastWAM(torch.nn.Module):
         return frames
 
     def build_inputs(self, sample, tiled: bool = False):
-        video = sample["video"]
+        video = sample.get("video", None)
+        video_latents = sample.get("video_latents", None)
+        if video is None and video_latents is None:
+            raise ValueError("FastWAM training requires either `sample[video]` or `sample[video_latents]`.")
+        if video is not None and video_latents is not None:
+            raise ValueError("`sample[video]` and `sample[video_latents]` are mutually exclusive.")
         if "context" not in sample or "context_mask" not in sample:
             raise ValueError(
-                "FastWAM training requires `sample['context']` and `sample['context_mask']`."
+                "FastWAM training requires `sample[context]` and `sample[context_mask]`."
             )
         context = sample["context"]
         context_mask = sample["context_mask"]
         proprio = sample.get("proprio", None)
-        if video.ndim != 5:
-            raise ValueError(f"`sample['video']` must be 5D [B, 3, T, H, W], got shape {tuple(video.shape)}")
-        if video.shape[1] != 3:
-            raise ValueError(f"`sample['video']` channel dimension must be 3, got shape {tuple(video.shape)}")
+        image_is_pad = sample.get("image_is_pad", None)
 
-        batch_size, _, num_frames, height, width = video.shape
-        if height % 16 != 0 or width % 16 != 0:
-            raise ValueError(
-                f"Video spatial dims must be multiples of 16, got H={height}, W={width}"
-            )
+        if video is not None:
+            if video.ndim != 5:
+                raise ValueError(f"`sample[video]` must be 5D [B, 3, T, H, W], got shape {tuple(video.shape)}")
+            if video.shape[1] != 3:
+                raise ValueError(f"`sample[video]` channel dimension must be 3, got shape {tuple(video.shape)}")
+
+            batch_size, _, num_frames, height, width = video.shape
+            if height % 16 != 0 or width % 16 != 0:
+                raise ValueError(
+                    f"Video spatial dims must be multiples of 16, got H={height}, W={width}"
+                )
+        else:
+            if video_latents.ndim != 5:
+                raise ValueError(
+                    f"`sample[video_latents]` must be 5D [B, C, T, H, W], got shape {tuple(video_latents.shape)}"
+                )
+            batch_size = int(video_latents.shape[0])
+            if image_is_pad is None:
+                raise ValueError("`sample[image_is_pad]` is required when using precomputed `video_latents`.")
+            if image_is_pad.ndim != 2:
+                raise ValueError(
+                    f"`sample[image_is_pad]` must be 2D [B, T], got shape {tuple(image_is_pad.shape)}"
+                )
+            if image_is_pad.shape[0] != batch_size:
+                raise ValueError(
+                    "`sample[image_is_pad]` batch mismatch for precomputed latents: "
+                    f"got {tuple(image_is_pad.shape)} vs batch_size={batch_size}"
+                )
+            num_frames = int(image_is_pad.shape[1])
+            expected_channels = int(getattr(self.vae.model, "z_dim", video_latents.shape[1]))
+            if int(video_latents.shape[1]) != expected_channels:
+                raise ValueError(
+                    f"`sample[video_latents]` channel dimension must be {expected_channels}, got {video_latents.shape[1]}"
+                )
+            latent_t = (num_frames - 1) // int(self.vae.temporal_downsample_factor) + 1
+            if int(video_latents.shape[2]) != latent_t:
+                raise ValueError(
+                    "`sample[video_latents]` temporal shape mismatch: "
+                    f"latent_t={video_latents.shape[2]} expected={latent_t} from num_frames={num_frames}"
+                )
+
         if num_frames % 4 != 1:
             raise ValueError(f"Video T must satisfy T % 4 == 1, got T={num_frames}")
         if num_frames <= 1:
             raise ValueError(f"Video T must be > 1 for action-conditioned training, got T={num_frames}")
 
         if "action" not in sample:
-            raise ValueError("`sample['action']` is required for FastWAM training.")
+            raise ValueError("`sample[action]` is required for FastWAM training.")
 
         action = sample["action"]
         if action.ndim != 3:
-            raise ValueError(f"`sample['action']` must be 3D [B, T, a_dim], got shape {tuple(action.shape)}")
+            raise ValueError(f"`sample[action]` must be 3D [B, T, a_dim], got shape {tuple(action.shape)}")
         action_horizon = int(action.shape[1])
         if action_horizon % (num_frames - 1) != 0:
             raise ValueError(
-                f"`sample['action']` temporal dimension must be divisible by video transitions ({num_frames - 1}), got {action_horizon}"
+                f"`sample[action]` temporal dimension must be divisible by video transitions ({num_frames - 1}), got {action_horizon}"
             )
 
         action_is_pad = sample.get("action_is_pad", None)
         if action_is_pad is not None:
             if action_is_pad.ndim != 2:
                 raise ValueError(
-                    f"`sample['action_is_pad']` must be 2D [B, T], got shape {tuple(action_is_pad.shape)}"
+                    f"`sample[action_is_pad]` must be 2D [B, T], got shape {tuple(action_is_pad.shape)}"
                 )
             if action_is_pad.shape[0] != batch_size or action_is_pad.shape[1] != action_horizon:
                 raise ValueError(
-                    "`sample['action_is_pad']` shape mismatch: "
+                    "`sample[action_is_pad]` shape mismatch: "
                     f"got {tuple(action_is_pad.shape)} vs expected ({batch_size}, {action_horizon})"
                 )
 
-        image_is_pad = sample.get("image_is_pad", None)
         if image_is_pad is not None:
             if image_is_pad.ndim != 2:
                 raise ValueError(
-                    f"`sample['image_is_pad']` must be 2D [B, T], got shape {tuple(image_is_pad.shape)}"
+                    f"`sample[image_is_pad]` must be 2D [B, T], got shape {tuple(image_is_pad.shape)}"
                 )
             if image_is_pad.shape[0] != batch_size or image_is_pad.shape[1] != num_frames:
                 raise ValueError(
-                    "`sample['image_is_pad']` shape mismatch: "
+                    "`sample[image_is_pad]` shape mismatch: "
                     f"got {tuple(image_is_pad.shape)} vs expected ({batch_size}, {num_frames})"
                 )
-        
-        input_video = video.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
-        input_latents = self._encode_video_latents(input_video, tiled=tiled)
+
+        if video_latents is None:
+            input_video = video.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
+            input_latents = self._encode_video_latents(input_video, tiled=tiled)
+        else:
+            input_latents = video_latents.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
 
         first_frame_latents = None
         fuse_flag = False
@@ -351,12 +391,12 @@ class FastWAM(torch.nn.Module):
         context_mask = context_mask.to(device=self.device, dtype=torch.bool, non_blocking=True)
         if self.proprio_encoder is not None:
             if proprio is None:
-                raise ValueError("`sample['proprio']` is required when `proprio_dim` is enabled.")
+                raise ValueError("`sample[proprio]` is required when `proprio_dim` is enabled.")
             if proprio.ndim != 3:
-                raise ValueError(f"`sample['proprio']` must be 3D [B, T, d], got shape {tuple(proprio.shape)}")
+                raise ValueError(f"`sample[proprio]` must be 3D [B, T, d], got shape {tuple(proprio.shape)}")
             if proprio.shape[2] != self.proprio_dim:
                 raise ValueError(
-                    f"`sample['proprio']` last dim must be {self.proprio_dim}, got {proprio.shape[2]}"
+                    f"`sample[proprio]` last dim must be {self.proprio_dim}, got {proprio.shape[2]}"
                 )
             proprio = proprio[:, 0, :] # [B, D]
             context, context_mask = self._append_proprio_to_context(

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Source this file from GEMBench training entrypoints. It uses /mnt/yuhan/basic_info.sh
+# for credentials without printing secrets, and emits Hydra W&B overrides via
+# gembench_wandb_hydra_overrides.
+
+if [[ -f /mnt/yuhan/basic_info.sh ]]; then
+  set +u
+  # shellcheck source=/mnt/yuhan/basic_info.sh
+  source /mnt/yuhan/basic_info.sh >/dev/null 2>&1 || true
+  set -u
+fi
+
+if [[ -n "${WANDB_TOKEN:-}" && -z "${WANDB_API_KEY:-}" ]]; then
+  export WANDB_API_KEY="${WANDB_TOKEN}"
+fi
+
+export WANDB_PROJECT="${WANDB_PROJECT:-trace-gembench}"
+export WANDB_MODE="${WANDB_MODE:-online}"
+export WANDB_SILENT="${WANDB_SILENT:-true}"
+export WANDB_DIR="${WANDB_DIR:-${FASTWAM_CACHE_ROOT:-${PWD}/.cache}/wandb}"
+mkdir -p "${WANDB_DIR}"
+
+# This request supersedes older queued launch commands that set WANDB_ENABLED=false.
+# Use DISABLE_WANDB=1 as the explicit opt-out for GEMBench runs.
+if [[ "${DISABLE_WANDB:-0}" == "1" ]]; then
+  export WANDB_ENABLED=false
+else
+  export WANDB_ENABLED=true
+fi
+
+gembench_wandb_hydra_overrides() {
+  local subproject="${1:?subproject required}"
+  local run_name="${2:?run_name required}"
+  local group="${3:-${subproject}}"
+
+  printf "%s\\n" \
+    "wandb.enabled=${WANDB_ENABLED}" \
+    "wandb.project=${WANDB_PROJECT}" \
+    "wandb.name=${run_name}" \
+    "wandb.group=${group}" \
+    "wandb.job_type=${subproject}" \
+    "wandb.tags=[gembench,${subproject}]" \
+    "wandb.subproject=${subproject}" \
+    "wandb.mode=${WANDB_MODE}"
+
+  if [[ -n "${WANDB_ENTITY:-}" ]]; then
+    printf "%s\\n" "wandb.workspace=${WANDB_ENTITY}"
+  elif [[ -n "${WANDB_WORKSPACE:-}" ]]; then
+    printf "%s\\n" "wandb.workspace=${WANDB_WORKSPACE}"
+  fi
+}
