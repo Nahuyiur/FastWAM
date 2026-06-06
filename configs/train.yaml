@@ -32,6 +32,28 @@ max_grad_norm: 1.0
 weight_decay: 0.0
 resume: null
 
+# checkpoint loading
+#
+# `checkpoint.resume_from` is for exact resume from an Accelerate state
+# directory. It restores model/optimizer/scheduler/dataloader progress and is
+# intended for same-config continuation.
+#
+# `checkpoint.init_from_weights` only loads the model weights from a `.pt`
+# checkpoint. Use this path when continuing from trained weights while changing
+# training hyperparameters such as learning_rate, max_steps, batch_size, or
+# gradient_accumulation_steps.
+checkpoint:
+  resume_from: null
+  init_from_weights: null
+  load_step_from_weights: false
+  initial_step: null
+  advance_scheduler_to_step: true
+  save_full_state: true
+  require_full_state: true
+  weight_min_free_gb: 30
+  full_state_min_free_gb: 120
+  keep_last_full_states: 2
+
 # optional timing/profiling; disabled by default to keep training semantics and speed unchanged
 profile:
   enabled: false

@@ -93,6 +93,65 @@ bash scripts/train_gembench_4gpu.sh \
   "wandb.enabled=false"
 ```
 
+### 从 checkpoint 继续训练
+
+训练会同时保存两类 checkpoint：
+
+- `checkpoints/state/step_XXXXXX/`：Accelerate/DeepSpeed 的完整训练状态，包含模型、optimizer、scheduler、随机状态和 dataloader 进度。
+- `checkpoints/weights/step_XXXXXX.pt`：模型权重快照，只包含 FastWAM/MoT 权重和可选的 `proprio_encoder` 权重，不包含 optimizer/scheduler。
+
+两种继续训练方式语义不同：
+
+1. 完整断点续跑：用于同一配置被中断后继续跑，尽量保持训练轨迹一致。
+
+```bash
+FASTWAM_RESUME_STATE=runs/<run>/checkpoints/state/step_020000 \
+bash scripts/train_gembench_vae_cache_b4a1_4gpu.sh
+```
+
+也可以直接传 run 目录，代码会自动选择最新的 `checkpoints/state/step_*`：
+
+```bash
+FASTWAM_RESUME_STATE=runs/<run> \
+bash scripts/train_gembench_vae_cache_b4a1_4gpu.sh
+```
+
+2. 只加载权重继续训练：用于从已有权重出发，但重新设置训练参数，例如学习率、batch/GAS、总步数、eval/save 间隔等。optimizer moment 和 dataloader 会按当前 config 重新创建；如果继承 checkpoint step，LR scheduler 默认会 fast-forward 到同一个 step，避免学习率从头开始。
+
+```bash
+FASTWAM_INIT_WEIGHTS=runs/<run>/checkpoints/weights/step_020000.pt \
+FASTWAM_LOAD_STEP_FROM_WEIGHTS=1 \
+FASTWAM_MAX_STEPS=60000 \
+FASTWAM_LEARNING_RATE=5e-5 \
+FASTWAM_BATCH_SIZE=4 \
+FASTWAM_GRAD_ACCUM=1 \
+bash scripts/train_gembench_vae_cache_b4a1_4gpu.sh
+```
+
+`FASTWAM_LOAD_STEP_FROM_WEIGHTS=1` 会从 checkpoint payload 或文件名里的
+`step_XXXXXX` 继承 `global_step`，并默认把 scheduler 前移到对应 step；所以上例会从 `20000/60000` 继续计数，学习率也处在 step 20000 的 schedule 位置。若希望把这份权重当作新的 finetune 初始化、从 step 0 重新记日志，就不要设置这个变量。也可以显式指定：
+
+```bash
+FASTWAM_INIT_WEIGHTS=runs/<run>/checkpoints/weights/step_020000.pt \
+FASTWAM_INITIAL_STEP=20000 \
+FASTWAM_MAX_STEPS=60000 \
+bash scripts/train_gembench_vae_cache_b4a1_4gpu.sh
+```
+
+等价的 Hydra 写法也可直接使用：
+
+```bash
+bash scripts/train_gembench_vae_cache_b4a1_4gpu.sh \
+  "checkpoint.init_from_weights=runs/<run>/checkpoints/weights/step_020000.pt" \
+  "checkpoint.load_step_from_weights=true" \
+  "max_steps=60000" \
+  "learning_rate=5e-5"
+```
+
+如果确实想继承 step 计数但让 scheduler 从头开始，可以额外设置 `checkpoint.advance_scheduler_to_step=false`。这通常不适合“同一次训练继续跑”，只适合刻意重启学习率 schedule 的 finetune 实验。
+
+原则上：想恢复同一次训练，用 `checkpoint.resume_from` / `FASTWAM_RESUME_STATE`；想换训练超参继续跑，用 `checkpoint.init_from_weights` / `FASTWAM_INIT_WEIGHTS`。
+
 
 ## VAE Cache 与等价加速实验
 

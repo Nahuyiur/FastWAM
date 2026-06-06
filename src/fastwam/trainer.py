@@ -3,6 +3,8 @@ import json
 import inspect
 import os
 import re
+import shutil
+import warnings
 from math import ceil
 from pathlib import Path
 import time
@@ -49,7 +51,16 @@ class Wan22Trainer:
         self.max_grad_norm = float(cfg.max_grad_norm)
         self.seed = int(cfg.seed)
 
-        self.resume = cfg.resume
+        self.resume = cfg.get("resume", None)
+        self.checkpoint_cfg = cfg.get("checkpoint", {}) or {}
+        self.checkpoint_save_full_state = self._as_bool(self.checkpoint_cfg.get("save_full_state", True))
+        self.checkpoint_require_full_state = self._as_bool(self.checkpoint_cfg.get("require_full_state", True))
+        self.checkpoint_weight_min_free_gb = float(self.checkpoint_cfg.get("weight_min_free_gb", 30))
+        self.checkpoint_full_state_min_free_gb = float(self.checkpoint_cfg.get("full_state_min_free_gb", 120))
+        keep_last_full_states = self.checkpoint_cfg.get("keep_last_full_states", 2)
+        self.checkpoint_keep_last_full_states = (
+            0 if self._is_nullish(keep_last_full_states) else int(keep_last_full_states)
+        )
         self.mixed_precision = str(cfg.mixed_precision).strip().lower()
         if self.mixed_precision not in {"no", "fp16", "bf16"}:
             raise ValueError(
@@ -181,6 +192,18 @@ class Wan22Trainer:
                 "batch_size": self.batch_size,
                 "gradient_accumulation_steps": self.gradient_accumulation_steps,
                 "learning_rate": self.learning_rate,
+                "checkpoint_resume_from": self._none_if_nullish(self.checkpoint_cfg.get("resume_from", None)),
+                "checkpoint_init_from_weights": self._none_if_nullish(
+                    self.checkpoint_cfg.get("init_from_weights", None)
+                ),
+                "checkpoint_load_step_from_weights": self._as_bool(
+                    self.checkpoint_cfg.get("load_step_from_weights", False)
+                ),
+                "checkpoint_initial_step": self._none_if_nullish(self.checkpoint_cfg.get("initial_step", None)),
+                "checkpoint_advance_scheduler_to_step": self._as_bool(
+                    self.checkpoint_cfg.get("advance_scheduler_to_step", True)
+                ),
+                "legacy_resume": self._none_if_nullish(self.resume),
             },
             mode=self.cfg.wandb.mode,
             dir=self.output_dir,
@@ -452,20 +475,250 @@ class Wan22Trainer:
         eta_m, eta_s = divmod(eta_rem, 60)
         return f"{eta_h:02d}:{eta_m:02d}:{eta_s:02d}", steps_per_sec
 
+    @staticmethod
+    def _is_nullish(value) -> bool:
+        if value is None:
+            return True
+        text = str(value).strip()
+        return text == "" or text.lower() in {"none", "null", "false"}
+
+    @classmethod
+    def _none_if_nullish(cls, value):
+        return None if cls._is_nullish(value) else value
+
+    @classmethod
+    def _as_bool(cls, value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if cls._is_nullish(value):
+            return False
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "no", "n", "off"}:
+            return False
+        return bool(value)
+
+    @staticmethod
+    def _step_from_path(path: Path) -> int | None:
+        match = re.fullmatch(r"step[_-](\d+)(?:\.pt)?", path.name)
+        if match:
+            return int(match.group(1))
+        return None
+
+    @staticmethod
+    def _is_visible_step_dir(path: Path) -> bool:
+        return path.is_dir() and re.fullmatch(r"step[_-]\d+", path.name) is not None
+
+    def _is_complete_state_checkpoint(self, path: Path) -> bool:
+        if not self._is_visible_step_dir(path):
+            return False
+        if not (path / "trainer_state.json").is_file():
+            return False
+
+        manifest_file = path / "checkpoint_manifest.json"
+        if not manifest_file.exists():
+            return True
+        try:
+            with open(manifest_file, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return False
+        return bool(manifest.get("complete", False))
+
+    @classmethod
+    def _latest_checkpoint_candidate(cls, candidates: list[Path], *, kind: str) -> Path:
+        candidates = [path for path in candidates if path.exists()]
+        if not candidates:
+            raise FileNotFoundError(f"No {kind} checkpoint candidates found.")
+
+        def sort_key(path: Path):
+            step = cls._step_from_path(path)
+            step_key = -1 if step is None else step
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            return step_key, mtime
+
+        return max(candidates, key=sort_key)
+
+    def _resolve_state_checkpoint_path(self, source) -> Path:
+        path = Path(str(source)).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(f"Resume state path not found: {source}")
+        if not path.is_dir():
+            raise ValueError(
+                f"`checkpoint.resume_from` must point to an Accelerate state directory or run directory, got: {source}"
+            )
+
+        if self._is_complete_state_checkpoint(path):
+            if not (path / "checkpoint_manifest.json").exists() and self.accelerator.is_main_process:
+                logger.warning(
+                    "Resume state %s has no checkpoint manifest; treating it as a legacy complete state.",
+                    path,
+                )
+            return path
+        if self._is_visible_step_dir(path):
+            raise FileNotFoundError(
+                f"State directory {path} is missing `trainer_state.json`; it is not a complete exact-resume "
+                "checkpoint. Use `checkpoint.init_from_weights` for weights-only continuation."
+            )
+
+        candidates: list[Path] = []
+        for root in (path / "checkpoints" / "state", path / "state", path):
+            if not root.is_dir():
+                continue
+            candidates.extend(
+                child
+                for child in root.iterdir()
+                if self._is_complete_state_checkpoint(child)
+            )
+        if not candidates:
+            raise FileNotFoundError(
+                "Could not find any `step_*` Accelerate state directories under "
+                f"{source}. Expected either `<run>/checkpoints/state/step_XXXXXX` "
+                "or a run directory containing `checkpoints/state/step_*`."
+            )
+        resolved = self._latest_checkpoint_candidate(candidates, kind="state")
+        logger.info("Resolved latest resume state under %s -> %s", source, resolved)
+        return resolved
+
+    def _resolve_weights_checkpoint_path(self, source) -> Path:
+        path = Path(str(source)).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(f"Weights checkpoint path not found: {source}")
+        if path.is_file():
+            return path
+
+        candidates: list[Path] = []
+        for root in (path / "checkpoints" / "weights", path / "weights", path):
+            if not root.is_dir():
+                continue
+            candidates.extend(child for child in root.iterdir() if child.is_file() and child.suffix == ".pt")
+        if not candidates:
+            raise FileNotFoundError(
+                "Could not find any `.pt` weight checkpoints under "
+                f"{source}. Expected either `<run>/checkpoints/weights/step_XXXXXX.pt` "
+                "or a run directory containing `checkpoints/weights/*.pt`."
+            )
+        resolved = self._latest_checkpoint_candidate(candidates, kind="weights")
+        logger.info("Resolved latest weights checkpoint under %s -> %s", source, resolved)
+        return resolved
+
+    def _checkpoint_request(self):
+        resume_from = self._none_if_nullish(self.checkpoint_cfg.get("resume_from", None))
+        init_from_weights = self._none_if_nullish(self.checkpoint_cfg.get("init_from_weights", None))
+        legacy_resume = self._none_if_nullish(self.resume)
+
+        if legacy_resume is not None:
+            if resume_from is not None or init_from_weights is not None:
+                raise ValueError(
+                    "Use either legacy `resume` or the new `checkpoint.*` fields, not both."
+                )
+            legacy_path = Path(str(legacy_resume)).expanduser()
+            if legacy_path.suffix == ".pt":
+                init_from_weights = legacy_resume
+                logger.warning(
+                    "`resume=/path/to/step.pt` is deprecated; use `checkpoint.init_from_weights=/path/to/step.pt`."
+                )
+            else:
+                resume_from = legacy_resume
+                logger.warning(
+                    "`resume=/path/to/state` is deprecated; use `checkpoint.resume_from=/path/to/state`."
+                )
+
+        if resume_from is not None and init_from_weights is not None:
+            raise ValueError(
+                "`checkpoint.resume_from` and `checkpoint.init_from_weights` are mutually exclusive. "
+                "Use `resume_from` for exact state resume, or `init_from_weights` when changing training settings."
+            )
+        return resume_from, init_from_weights
+
+    def _set_step_after_weights_load(self, payload: dict, weights_path: Path) -> None:
+        initial_step = self._none_if_nullish(self.checkpoint_cfg.get("initial_step", None))
+        load_step_from_weights = self._as_bool(self.checkpoint_cfg.get("load_step_from_weights", False))
+        if initial_step is None and not load_step_from_weights:
+            return
+
+        if initial_step is not None:
+            step = int(initial_step)
+            source = "checkpoint.initial_step"
+        else:
+            raw_step = payload.get("step", None)
+            if raw_step is None:
+                raw_step = self._step_from_path(weights_path)
+            if raw_step is None:
+                raise ValueError(
+                    "`checkpoint.load_step_from_weights=true` was requested, but the checkpoint has no `step` "
+                    f"payload and the filename does not contain `step_XXXXXX`: {weights_path}"
+                )
+            step = int(raw_step)
+            source = "checkpoint payload"
+
+        if step < 0:
+            raise ValueError(f"Checkpoint initial step must be non-negative, got {step}.")
+        self.global_step = step
+        self.epoch = 0
+        self.batch_in_epoch = 0
+        self.train_sampler.clear_resume_batch_offset()
+        logger.info("Initialized training step from %s: global_step=%d", source, self.global_step)
+
+    def _advance_scheduler_to_global_step(self) -> None:
+        if self.global_step <= 0:
+            return
+        if not self._as_bool(self.checkpoint_cfg.get("advance_scheduler_to_step", True)):
+            logger.warning(
+                "Keeping scheduler at its initial state despite global_step=%d because "
+                "`checkpoint.advance_scheduler_to_step=false`.",
+                self.global_step,
+            )
+            return
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Detected call of `lr_scheduler.step\(\)` before `optimizer.step\(\)`",
+                category=UserWarning,
+            )
+            for _ in range(self.global_step):
+                self.scheduler.step()
+        current_lr = float(self.optimizer.param_groups[0]["lr"])
+        logger.info(
+            "Advanced LR scheduler to global_step=%d for weights-only continuation; current_lr=%.6e",
+            self.global_step,
+            current_lr,
+        )
+
     def _resume_or_load_checkpoint(self):
-        resume = self.resume
-        if not resume:
+        resume_from, init_from_weights = self._checkpoint_request()
+        if resume_from is None and init_from_weights is None:
             return
-        resume_path = Path(str(resume))
-        if resume_path.is_dir():
-            logger.info("Resuming full training state from directory: %s", resume)
+
+        if resume_from is not None:
+            resume_path = self._resolve_state_checkpoint_path(resume_from)
+            logger.info("Resuming full training state from directory: %s", resume_path)
             self.load_training_state(str(resume_path))
+            logger.info(
+                "Exact resume restored optimizer/scheduler/dataloader state. "
+                "Use `checkpoint.init_from_weights` instead if changing LR, batch size, grad accumulation, or schedule."
+            )
             return
-        if not resume_path.exists():
-            raise FileNotFoundError(f"Resume checkpoint not found: {resume}")
-        logger.info("Loading weight checkpoint only: %s", resume)
-        self.accelerator.unwrap_model(self.model).load_checkpoint(str(resume_path), optimizer=None)
-        logger.warning("Loaded .pt weights only; optimizer/scheduler/step were not restored under ZeRO2.")
+
+        weights_path = self._resolve_weights_checkpoint_path(init_from_weights)
+        logger.info("Initializing model weights from checkpoint: %s", weights_path)
+        payload = self.accelerator.unwrap_model(self.model).load_checkpoint(str(weights_path), optimizer=None)
+        self._set_step_after_weights_load(payload=payload, weights_path=weights_path)
+        self._advance_scheduler_to_global_step()
+        logger.info(
+            "Loaded weights only. Optimizer, scheduler, and dataloader are freshly built from the current config."
+        )
+        if self.max_steps is not None and self.global_step >= self.max_steps:
+            logger.warning(
+                "Current global_step=%d is already >= max_steps=%d. Increase `max_steps` if this run should continue.",
+                self.global_step,
+                self.max_steps,
+            )
 
     def _set_dit_only_train_mode(self):
         # Match DiffSynth's freeze_except("dit"): only DiT stays trainable/in-train-mode.
@@ -757,7 +1010,16 @@ class Wan22Trainer:
     def _save_weights_checkpoint(self, step_tag: str):
         model = self.accelerator.unwrap_model(self.model)
         ckpt_path = os.path.join(self.weights_dir, f"{step_tag}.pt")
-        model.save_checkpoint(ckpt_path, optimizer=None, step=self.global_step)
+        tmp_path = os.path.join(self.weights_dir, f".{step_tag}.pt.tmp")
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        try:
+            model.save_checkpoint(tmp_path, optimizer=None, step=self.global_step)
+            os.replace(tmp_path, ckpt_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
         return ckpt_path
 
     def _save_trainer_state(self, state_path: str):
@@ -770,68 +1032,224 @@ class Wan22Trainer:
         with open(state_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=True, indent=2)
 
+    def _write_checkpoint_manifest(self, state_path: str, step_tag: str, weights_path: str | None):
+        manifest_file = os.path.join(state_path, "checkpoint_manifest.json")
+        payload = {
+            "checkpoint_version": 1,
+            "complete": True,
+            "step_tag": step_tag,
+            "global_step": int(self.global_step),
+            "epoch": int(self.epoch),
+            "batch_in_epoch": int(self.batch_in_epoch),
+            "weights_path": weights_path,
+            "world_size": int(self.accelerator.num_processes),
+            "zero_stage": self.accelerator.state.deepspeed_plugin.deepspeed_config.get("zero_optimization", {}).get(
+                "stage", "unknown"
+            ),
+        }
+        with open(manifest_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2)
+
+    def _collective_error_count(self, failed: bool) -> int:
+        flag = torch.tensor([1 if failed else 0], device=self.accelerator.device, dtype=torch.int32)
+        return int(self.accelerator.gather(flag).sum().item())
+
+    def _collective_disk_preflight(self, path: str, min_free_gb: float, *, label: str) -> tuple[bool, float]:
+        if min_free_gb <= 0:
+            return True, float("inf")
+        free_gb = float(shutil.disk_usage(path).free / 1024**3)
+        ok = free_gb >= float(min_free_gb)
+        ok_flag = torch.tensor([1 if ok else 0], device=self.accelerator.device, dtype=torch.int32)
+        free_value = torch.tensor([free_gb], device=self.accelerator.device, dtype=torch.float32)
+        all_ok = int(self.accelerator.gather(ok_flag).min().item()) == 1
+        min_seen_free_gb = float(self.accelerator.gather(free_value).min().item())
+        if not all_ok and self.accelerator.is_main_process:
+            logger.error(
+                "[ckpt] %s checkpoint preflight failed at step=%d: min free disk %.2f GiB < required %.2f GiB.",
+                label,
+                self.global_step,
+                min_seen_free_gb,
+                min_free_gb,
+            )
+        return all_ok, min_seen_free_gb
+
+    def _should_save_full_state(self) -> tuple[bool, str]:
+        if not self.checkpoint_save_full_state:
+            return False, "full Accelerate/DeepSpeed state save disabled by config"
+        min_free_gb = float(self.checkpoint_full_state_min_free_gb)
+        ok, min_seen_free_gb = self._collective_disk_preflight(
+            self.state_dir,
+            min_free_gb,
+            label="full-state",
+        )
+        if not ok:
+            return False, f"free disk {min_seen_free_gb:.2f} GiB < required {min_free_gb:.2f} GiB"
+        return True, ""
+
+    def _prune_old_full_state_checkpoints(self):
+        keep = int(self.checkpoint_keep_last_full_states)
+        if keep <= 0 or not self.accelerator.is_main_process:
+            return
+        state_root = Path(self.state_dir)
+        candidates = [path for path in state_root.iterdir() if self._is_complete_state_checkpoint(path)]
+        candidates.sort(key=lambda path: self._step_from_path(path) or -1)
+        for stale in candidates[:-keep]:
+            deleting = stale.with_name(f".deleting_{stale.name}_{int(time.time())}")
+            try:
+                os.replace(stale, deleting)
+                shutil.rmtree(deleting)
+                logger.info("[ckpt] pruned old full state checkpoint: %s", stale)
+            except Exception:
+                logger.exception("[ckpt] failed to prune old full state checkpoint: %s", stale)
+
+    def _promote_full_state_checkpoint(self, tmp_state_path: str, state_path: str, step_tag: str, ckpt_path: str | None):
+        final_state = Path(state_path)
+        if self._is_complete_state_checkpoint(final_state):
+            logger.info("[ckpt] full state already complete for %s; skipping duplicate state promotion.", step_tag)
+            shutil.rmtree(tmp_state_path, ignore_errors=True)
+            return
+
+        self._save_trainer_state(tmp_state_path)
+        self._write_checkpoint_manifest(tmp_state_path, step_tag=step_tag, weights_path=ckpt_path)
+
+        backup_path = None
+        if os.path.exists(state_path):
+            backup_path = os.path.join(self.state_dir, f".replacing_{step_tag}_{int(time.time())}")
+            os.replace(state_path, backup_path)
+        try:
+            os.replace(tmp_state_path, state_path)
+        except Exception:
+            if backup_path is not None and os.path.exists(backup_path) and not os.path.exists(state_path):
+                os.replace(backup_path, state_path)
+            raise
+        if backup_path is not None:
+            shutil.rmtree(backup_path, ignore_errors=True)
+
     def save_checkpoint(self):
         step_tag = f"step_{self.global_step:06d}"
 
         self.accelerator.wait_for_everyone()
+        weights_ok, weights_free_gb = self._collective_disk_preflight(
+            self.weights_dir,
+            float(self.checkpoint_weight_min_free_gb),
+            label="weights",
+        )
+        if not weights_ok:
+            raise RuntimeError(
+                f"[ckpt] refusing to save weights checkpoint at step={self.global_step}: "
+                f"free disk {weights_free_gb:.2f} GiB < required {float(self.checkpoint_weight_min_free_gb):.2f} GiB"
+            )
+
         ckpt_path = None
+        weight_error = None
         if self.accelerator.is_main_process:
-            ckpt_path = self._save_weights_checkpoint(step_tag=step_tag)
+            try:
+                ckpt_path = self._save_weights_checkpoint(step_tag=step_tag)
+            except Exception as exc:
+                weight_error = exc
+        weight_error_count = self._collective_error_count(weight_error is not None)
+        if weight_error_count > 0:
+            if weight_error is not None:
+                logger.exception("[ckpt] main rank failed to save weights checkpoint.")
+            raise RuntimeError(f"[ckpt] weights checkpoint save failed on {weight_error_count} rank(s)")
         self.accelerator.wait_for_everyone()
 
         state_path = os.path.join(self.state_dir, step_tag)
-        ensure_dir(state_path)
-        self.accelerator.save_state(output_dir=state_path)
+        should_save_state, skip_reason = self._should_save_full_state()
+        if not should_save_state:
+            message = (
+                f"[ckpt] full state checkpoint unavailable at step={self.global_step}: {skip_reason}. "
+                "Exact optimizer/dataloader/RNG resume would not be available."
+            )
+            if self.checkpoint_require_full_state:
+                raise RuntimeError(message)
+            if self.accelerator.is_main_process:
+                logger.warning("%s Continuing because checkpoint.require_full_state=false.", message)
+            self.accelerator.wait_for_everyone()
+            return {"weights_path": ckpt_path, "state_path": None, "state_skipped": True}
+
+        tmp_state_path = os.path.join(self.state_dir, f".{step_tag}.tmp")
         if self.accelerator.is_main_process:
-            self._save_trainer_state(state_path)
+            shutil.rmtree(tmp_state_path, ignore_errors=True)
+        self.accelerator.wait_for_everyone()
+        ensure_dir(tmp_state_path)
+
+        state_error = None
+        try:
+            self.accelerator.save_state(output_dir=tmp_state_path)
+        except Exception as exc:
+            state_error = exc
+
+        error_flag = torch.tensor([1 if state_error is not None else 0], device=self.accelerator.device)
+        error_count = int(self.accelerator.gather(error_flag).sum().item())
+        if error_count > 0:
+            if state_error is not None:
+                logger.exception("[ckpt] local rank failed to save full state checkpoint.")
+            if self.accelerator.is_main_process:
+                logger.error(
+                    "[ckpt] full state checkpoint failed on %d rank(s); deleting temporary state directory %s. "
+                    "Weights checkpoint remains available for weights-only continuation.",
+                    error_count,
+                    tmp_state_path,
+                )
+                shutil.rmtree(tmp_state_path, ignore_errors=True)
+            self.accelerator.wait_for_everyone()
+            if self.checkpoint_require_full_state:
+                raise RuntimeError(f"[ckpt] full state checkpoint save failed on {error_count} rank(s)")
+            return {"weights_path": ckpt_path, "state_path": None, "state_skipped": True}
+
+        final_error = None
+        if self.accelerator.is_main_process:
+            try:
+                self._promote_full_state_checkpoint(
+                    tmp_state_path,
+                    state_path,
+                    step_tag=step_tag,
+                    ckpt_path=ckpt_path,
+                )
+                self._prune_old_full_state_checkpoints()
+            except Exception as exc:
+                final_error = exc
+        final_error_count = self._collective_error_count(final_error is not None)
+        if final_error_count > 0:
+            if final_error is not None:
+                logger.exception("[ckpt] main rank failed to finalize full state checkpoint.")
+            raise RuntimeError(f"[ckpt] full state checkpoint finalization failed on {final_error_count} rank(s)")
         self.accelerator.wait_for_everyone()
 
         return {"weights_path": ckpt_path, "state_path": state_path}
 
     def load_training_state(self, state_dir: str):
+        state_path = Path(state_dir)
+        state_file = state_path / "trainer_state.json"
+        if not self._is_complete_state_checkpoint(state_path):
+            raise FileNotFoundError(
+                f"State directory {state_dir} is not a complete exact-resume checkpoint. "
+                "Use `checkpoint.init_from_weights` for weights-only continuation."
+            )
         self.accelerator.load_state(input_dir=state_dir)
-        state_file = Path(state_dir) / "trainer_state.json"
-        if state_file.exists():
-            with open(state_file, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            self.global_step = int(payload["global_step"])
+        with open(state_file, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        self.global_step = int(payload["global_step"])
 
-            if "epoch" in payload and "batch_in_epoch" in payload:
-                self.epoch = int(payload["epoch"])
-                self.batch_in_epoch = int(payload["batch_in_epoch"])
-                self.train_sampler.set_epoch_offset(self.epoch)
-                self.train_sampler.set_resume_batch_offset(self.batch_in_epoch)
-                logger.info(
-                    "Restored dataloader progress: epoch=%d batch_in_epoch=%d sample_offset=%d",
-                    self.epoch,
-                    self.batch_in_epoch,
-                    self.batch_in_epoch * self.batch_size * self.accelerator.num_processes,
-                )
-            else:
-                self.epoch = 0
-                self.batch_in_epoch = 0
-                self.train_sampler.clear_resume_batch_offset()
-                logger.warning(
-                    "State file does not contain `epoch`/`batch_in_epoch`; "
-                    "optimizer/scheduler were restored, but dataloader progress resume is skipped."
-                )
-            self.accelerator.wait_for_everyone()
-            return
-
-        match = re.search(r"step[_-](\d+)$", str(state_dir).rstrip("/"))
-        if match:
-            self.global_step = int(match.group(1))
+        if "epoch" in payload and "batch_in_epoch" in payload:
+            self.epoch = int(payload["epoch"])
+            self.batch_in_epoch = int(payload["batch_in_epoch"])
+            self.train_sampler.set_epoch_offset(self.epoch)
+            self.train_sampler.set_resume_batch_offset(self.batch_in_epoch)
+            logger.info(
+                "Restored dataloader progress: epoch=%d batch_in_epoch=%d sample_offset=%d",
+                self.epoch,
+                self.batch_in_epoch,
+                self.batch_in_epoch * self.batch_size * self.accelerator.num_processes,
+            )
         else:
-            self.global_step = 0
-        self.epoch = 0
-        self.batch_in_epoch = 0
-        self.train_sampler.clear_resume_batch_offset()
+            raise FileNotFoundError(
+                f"State file {state_file} is missing dataloader progress. "
+                "It cannot provide exact resume."
+            )
         self.accelerator.wait_for_everyone()
         logger.info("Loaded accelerate training state from %s at step=%d", state_dir, self.global_step)
-        logger.warning(
-            "State file `%s` is missing; dataloader progress resume is skipped.",
-            state_file,
-        )
 
     def train(self):
         self._set_dit_only_train_mode()

@@ -97,5 +97,33 @@ WANDB_RUN_NAME_DEFAULT="${WANDB_RUN_NAME:-${RUN_ID:-${TASK_NAME}}}"
 WANDB_GROUP_DEFAULT="${WANDB_GROUP:-${WANDB_SUBPROJECT_DEFAULT}}"
 mapfile -t WANDB_OVERRIDES < <(gembench_wandb_hydra_overrides "${WANDB_SUBPROJECT_DEFAULT}" "${WANDB_RUN_NAME_DEFAULT}" "${WANDB_GROUP_DEFAULT}")
 
+TRAIN_OVERRIDES=()
+add_hydra_override_from_env() {
+  local env_name="$1"
+  local hydra_key="$2"
+  local value="${!env_name:-}"
+  if [[ -n "${value}" ]]; then
+    TRAIN_OVERRIDES+=("${hydra_key}=${value}")
+  fi
+}
+
+add_hydra_override_from_env FASTWAM_RESUME_STATE checkpoint.resume_from
+add_hydra_override_from_env FASTWAM_INIT_WEIGHTS checkpoint.init_from_weights
+add_hydra_override_from_env FASTWAM_LOAD_STEP_FROM_WEIGHTS checkpoint.load_step_from_weights
+add_hydra_override_from_env FASTWAM_INITIAL_STEP checkpoint.initial_step
+add_hydra_override_from_env FASTWAM_ADVANCE_SCHEDULER_TO_STEP checkpoint.advance_scheduler_to_step
+add_hydra_override_from_env FASTWAM_SAVE_FULL_STATE checkpoint.save_full_state
+add_hydra_override_from_env FASTWAM_REQUIRE_FULL_STATE checkpoint.require_full_state
+add_hydra_override_from_env FASTWAM_WEIGHT_MIN_FREE_GB checkpoint.weight_min_free_gb
+add_hydra_override_from_env FASTWAM_FULL_STATE_MIN_FREE_GB checkpoint.full_state_min_free_gb
+add_hydra_override_from_env FASTWAM_KEEP_LAST_FULL_STATES checkpoint.keep_last_full_states
+add_hydra_override_from_env FASTWAM_MAX_STEPS max_steps
+add_hydra_override_from_env FASTWAM_LEARNING_RATE learning_rate
+add_hydra_override_from_env FASTWAM_BATCH_SIZE batch_size
+add_hydra_override_from_env FASTWAM_GRAD_ACCUM gradient_accumulation_steps
+add_hydra_override_from_env FASTWAM_SAVE_EVERY save_every
+add_hydra_override_from_env FASTWAM_EVAL_EVERY eval_every
+add_hydra_override_from_env FASTWAM_OUTPUT_DIR output_dir
+
 echo "[gembench-train] task=${TASK_NAME} nproc=${NPROC_PER_NODE} root=${GEMBENCH_ROOT}"
-bash scripts/train_zero2.sh "${NPROC_PER_NODE}" "task=${TASK_NAME}" "$@" "${WANDB_OVERRIDES[@]}"
+bash scripts/train_zero2.sh "${NPROC_PER_NODE}" "task=${TASK_NAME}" "${TRAIN_OVERRIDES[@]}" "$@" "${WANDB_OVERRIDES[@]}"
