@@ -290,7 +290,7 @@ def main() -> int:
     parser.add_argument("--robot-3dlotus-root", default=None)
     parser.add_argument("--cache-camera-order", default=",".join(DEFAULT_CACHE_CAMERA_ORDER))
     parser.add_argument("--image-size", type=int, default=224)
-    parser.add_argument("--max-demos", type=int, default=2)
+    parser.add_argument("--max-demos", type=int, default=None)
     parser.add_argument("--taskvars", default=None)
     parser.add_argument("--max-tries", type=int, default=10)
     parser.add_argument("--extract-if-missing", action="store_true")

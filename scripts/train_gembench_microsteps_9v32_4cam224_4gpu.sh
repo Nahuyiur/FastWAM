@@ -15,7 +15,7 @@ export PATH="${FASTWAM_CONDA_ENV}/bin:${PATH}"
 RUN_ID="${RUN_ID:-fastwam_gembench_wam_9v32_4cam224_b4a1_$(date +%Y%m%d_%H%M%S)}"
 export GEMBENCH_9V32_4CAM_MANIFEST="${GEMBENCH_9V32_4CAM_MANIFEST:-${GEMBENCH_ROOT}/fastwam_cache/microsteps_9v32_4cam224_manifest.json}"
 export GEMBENCH_9V32_4CAM_RGB_CACHE_DIR="${GEMBENCH_9V32_4CAM_RGB_CACHE_DIR:-${GEMBENCH_ROOT}/fastwam_cache/microsteps_9v32_4cam224_rgb}"
-export GEMBENCH_9V32_4CAM_VAE_CACHE_DIR="${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR:-}"
+export GEMBENCH_9V32_4CAM_VAE_CACHE_DIR="${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR:-${GEMBENCH_ROOT}/fastwam_cache/vae_latents/microsteps_9v32_seed0_4cam224x896_t9_a32_v1}"
 export GEMBENCH_9V32_MANIFEST="${GEMBENCH_9V32_4CAM_MANIFEST}"
 export GEMBENCH_9V32_RGB_CACHE_DIR="${GEMBENCH_9V32_4CAM_RGB_CACHE_DIR}"
 export GEMBENCH_9V32_VAE_CACHE_DIR="${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR}"
@@ -114,6 +114,26 @@ if [[ -n "${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR}" ]]; then
     echo "[gembench-9v32-4cam-train] missing VAE latent cache manifest: ${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR}/manifest.json" >&2
     exit 1
   fi
+  "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+cache_dir = Path(os.environ["GEMBENCH_9V32_4CAM_VAE_CACHE_DIR"])
+payload = json.loads((cache_dir / "manifest.json").read_text())
+dataset = payload.get("dataset", {})
+checks = {
+    "cache_version": payload.get("cache_version") == "gembench_microsteps_9v32_vae_latents_v1",
+    "complete": bool(payload.get("complete")),
+    "action_horizon": dataset.get("action_horizon") == 32,
+    "video_size": dataset.get("video_size") == [224, 896],
+    "camera_order": dataset.get("camera_order") == ["left_shoulder", "right_shoulder", "wrist", "front"],
+    "cache_camera_order": dataset.get("cache_camera_order") == ["left_shoulder", "right_shoulder", "wrist", "front"],
+}
+failed = {key: value for key, value in checks.items() if not value}
+if failed:
+    raise SystemExit(f"invalid GEMBench 9V32 4cam VAE cache {cache_dir}: failed={failed}")
+PY
   echo "[gembench-9v32-4cam-train] vae_latent_cache_dir=${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR}"
 fi
 bash scripts/train_zero2.sh "${NPROC_PER_NODE}" "task=${TASK_NAME}" "${TRAIN_OVERRIDES[@]}" "$@" "${WANDB_OVERRIDES[@]}"
