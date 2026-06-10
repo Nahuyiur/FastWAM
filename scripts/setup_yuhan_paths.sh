@@ -2,9 +2,9 @@
 # Shared path setup for FastWAM runs on jinshan_pub.
 #
 # Defaults match the current server layout:
-#   FastWAM repo: /mnt/yuhan/FastWAM
+#   TRaCE repo: /mnt/yuhan/TRaCE
 #   conda root:   /mnt/miniconda3
-#   checkpoints:  /mnt/yuhan/FastWAM/checkpoints
+#   checkpoints:  /mnt/yuhan/TRaCE/checkpoints -> /mnt/yuhan/FastWAM/checkpoints
 #
 # Every value can still be overridden by exporting the variable before sourcing
 # this file.
@@ -27,11 +27,17 @@ FASTWAM_RUNS_ROOT="${FASTWAM_RUNS_ROOT:-${FASTWAM_ROOT}/runs}"
 RLBENCH_PICK_LIFT_ROOT="${RLBENCH_PICK_LIFT_ROOT:-${YUHAN_ROOT}/data/rlbench_pick_lift_color_shape}"
 RLBENCH_LEROBOT_TRAIN_DIR="${RLBENCH_LEROBOT_TRAIN_DIR:-${RLBENCH_PICK_LIFT_ROOT}/lerobot/train}"
 RLBENCH_LEROBOT_TEST_DIR="${RLBENCH_LEROBOT_TEST_DIR:-${RLBENCH_PICK_LIFT_ROOT}/lerobot/test}"
-GEMBENCH_SIM_ROOT="${GEMBENCH_SIM_ROOT:-${YUHAN_ROOT}/gembench_sim}"
-RLBENCH_ROOT="${RLBENCH_ROOT:-${GEMBENCH_SIM_ROOT}/RLBench}"
-COPPELIASIM_ROOT="${COPPELIASIM_ROOT:-${GEMBENCH_SIM_ROOT}/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04}"
+RLBENCH_ROOT="${RLBENCH_ROOT:-${YUHAN_ROOT}/RLBench}"
+ROBOT_3DLOTUS_ROOT="${ROBOT_3DLOTUS_ROOT:-${YUHAN_ROOT}/gembench_sim/robot-3dlotus}"
+GEMBENCH_RLBENCH_ROOT="${GEMBENCH_RLBENCH_ROOT:-${YUHAN_ROOT}/gembench_sim/RLBench}"
+GEMBENCH_PYREP_ROOT="${GEMBENCH_PYREP_ROOT:-${YUHAN_ROOT}/gembench_sim/PyRep}"
+if [[ -z "${COPPELIASIM_ROOT:-}" && -d "${YUHAN_ROOT}/gembench_sim/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04" ]]; then
+  COPPELIASIM_ROOT="${YUHAN_ROOT}/gembench_sim/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04"
+else
+  COPPELIASIM_ROOT="${COPPELIASIM_ROOT:-${YUHAN_ROOT}/TRaCE_fix/.runtime/CoppeliaSim_Pro_V4_1_0_Ubuntu20_04}"
+fi
 RLBENCH_STUB_ROOT="${RLBENCH_STUB_ROOT:-${YUHAN_ROOT}/rlbench_lerobot_tools/stubs}"
-RLBENCH_PYREP_SITE="${RLBENCH_PYREP_SITE:-${FASTWAM_CONDA_ENV}/lib/python3.10/site-packages}"
+RLBENCH_PYREP_SITE="${RLBENCH_PYREP_SITE:-${CONDA_ROOT}/envs/gembench/lib/python3.10/site-packages}"
 
 export FASTWAM_ROOT
 export YUHAN_ROOT
@@ -44,8 +50,10 @@ export FASTWAM_RUNS_ROOT
 export RLBENCH_PICK_LIFT_ROOT
 export RLBENCH_LEROBOT_TRAIN_DIR
 export RLBENCH_LEROBOT_TEST_DIR
-export GEMBENCH_SIM_ROOT
 export RLBENCH_ROOT
+export ROBOT_3DLOTUS_ROOT
+export GEMBENCH_RLBENCH_ROOT
+export GEMBENCH_PYREP_ROOT
 export COPPELIASIM_ROOT
 export RLBENCH_STUB_ROOT
 export RLBENCH_PYREP_SITE
@@ -67,22 +75,22 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PYTHONUNBUFFERED=1
 
-if [[ -d "${COPPELIASIM_ROOT}" ]]; then
-  case ":${LD_LIBRARY_PATH:-}:" in
-    *":${COPPELIASIM_ROOT}:"*) ;;
-    *) export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:${COPPELIASIM_ROOT}" ;;
-  esac
-  export QT_QPA_PLATFORM_PLUGIN_PATH="${QT_QPA_PLATFORM_PLUGIN_PATH:-${COPPELIASIM_ROOT}}"
-fi
-
 case ":${PYTHONPATH:-}:" in
   *":${FASTWAM_ROOT}/src:"*) ;;
   *) export PYTHONPATH="${FASTWAM_ROOT}/src:${PYTHONPATH:-}" ;;
 esac
-if [[ -d "${RLBENCH_ROOT}" ]]; then
-  case ":${PYTHONPATH:-}:" in
-    *":${RLBENCH_ROOT}:"*) ;;
-    *) export PYTHONPATH="${RLBENCH_ROOT}:${PYTHONPATH:-}" ;;
+for extra_path in "${ROBOT_3DLOTUS_ROOT}" "${GEMBENCH_RLBENCH_ROOT}" "${GEMBENCH_PYREP_ROOT}"; do
+  if [[ -d "${extra_path}" ]]; then
+    case ":${PYTHONPATH:-}:" in
+      *":${extra_path}:"*) ;;
+      *) export PYTHONPATH="${extra_path}:${PYTHONPATH:-}" ;;
+    esac
+  fi
+done
+if [[ -d "${COPPELIASIM_ROOT}" ]]; then
+  case ":${LD_LIBRARY_PATH:-}:" in
+    *":${COPPELIASIM_ROOT}:"*) ;;
+    *) export LD_LIBRARY_PATH="${COPPELIASIM_ROOT}:${LD_LIBRARY_PATH:-}" ;;
   esac
 fi
 
