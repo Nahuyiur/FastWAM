@@ -16,6 +16,7 @@ from fastwam.datasets.gembench.microsteps_9v32 import (
     DEFAULT_CACHE_CAMERA_ORDER,
     DEFAULT_CAMERA_ORDER,
     DEFAULT_FRAME_OFFSETS,
+    OFFICIAL_GEMBENCH_CAMERA_ORDER,
     SCHEMA_VERSION,
     cache_episode_path,
     make_taskvar,
@@ -90,6 +91,17 @@ def _load_key_frameids(store: LMDBEpisodeStore, taskvar: str, episode_key: str) 
         return None, f"{type(exc).__name__}: {exc}"
 
 
+def _parse_camera_order(value: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",")]
+    else:
+        items = [str(item).strip() for item in value]
+    order = tuple(item for item in items if item)
+    if not order:
+        raise ValueError("camera order must contain at least one camera")
+    return order
+
+
 def _write_markdown(path: Path, payload: dict[str, Any]) -> None:
     lines = [
         "# GEMBench Microsteps 9V32 Contract Audit",
@@ -123,6 +135,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise FileNotFoundError(f"Missing GEMBench train microsteps tar: {microsteps_tar}")
     if not keysteps_dir.is_dir():
         raise FileNotFoundError(f"Missing GEMBench train keysteps LMDB dir: {keysteps_dir}")
+    camera_order = _parse_camera_order(args.camera_order)
+    cache_camera_order = _parse_camera_order(args.cache_camera_order)
+    missing_cameras = [camera for camera in camera_order if camera not in cache_camera_order]
+    if missing_cameras:
+        raise ValueError(f"camera_order contains cameras absent from cache_camera_order: {missing_cameras}")
+    image_size = int(args.image_size)
+    if image_size <= 0:
+        raise ValueError(f"image_size must be positive, got {image_size}")
 
     demos: list[dict[str, Any]] = []
     task_counts: Counter[str] = Counter()
@@ -183,7 +203,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     policy_starts = sum(max(0, length - 1) for length in lengths)
     eligible_transition_fraction = float(eligible_starts / policy_starts) if policy_starts else 0.0
     eligible_episode_fraction = float(eligible_episodes / len(demos)) if demos else 0.0
-    cache_required_bytes_estimate = sum(length * len(DEFAULT_CAMERA_ORDER) * 224 * 224 * 3 for length in lengths)
+    cache_required_bytes_estimate = sum(length * len(cache_camera_order) * image_size * image_size * 3 for length in lengths)
 
     checks = [
         {"name": "microsteps_demos_nonempty", "passed": len(demos) > 0, "detail": len(demos)},
@@ -220,8 +240,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "frame_offsets": list(DEFAULT_FRAME_OFFSETS),
         "action_horizon": 32,
         "num_video_frames": 9,
-        "camera_order": list(DEFAULT_CAMERA_ORDER),
-        "cache_camera_order": list(DEFAULT_CACHE_CAMERA_ORDER),
+        "camera_order": list(camera_order),
+        "cache_camera_order": list(cache_camera_order),
+        "image_size": image_size,
         "summary": {
             "demos": len(demos),
             "length_source": str(args.length_source),
@@ -250,6 +271,11 @@ def main() -> int:
     parser.add_argument("--microsteps-tar", default=None)
     parser.add_argument("--keysteps-dir", default=None)
     parser.add_argument("--rgb-cache-dir", default="/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_rgb")
+    parser.add_argument("--camera-order", default=",".join(DEFAULT_CAMERA_ORDER))
+    parser.add_argument("--cache-camera-order", default=",".join(DEFAULT_CACHE_CAMERA_ORDER))
+    parser.add_argument("--official-camera-order", action="store_const", dest="camera_order", const=",".join(OFFICIAL_GEMBENCH_CAMERA_ORDER))
+    parser.add_argument("--official-cache-camera-order", action="store_const", dest="cache_camera_order", const=",".join(OFFICIAL_GEMBENCH_CAMERA_ORDER))
+    parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--max-demos", type=int, default=None)
     parser.add_argument(
         "--length-source",

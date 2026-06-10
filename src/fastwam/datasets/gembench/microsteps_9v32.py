@@ -21,6 +21,7 @@ DEFAULT_PROMPT = "A video recorded from a robot's point of view executing the fo
 DEFAULT_FRAME_OFFSETS = (0, 4, 8, 12, 16, 20, 24, 28, 32)
 DEFAULT_CAMERA_ORDER = ("front", "wrist", "left_shoulder")
 DEFAULT_CACHE_CAMERA_ORDER = DEFAULT_CAMERA_ORDER
+OFFICIAL_GEMBENCH_CAMERA_ORDER = ("left_shoulder", "right_shoulder", "wrist", "front")
 
 
 def parse_taskvar(taskvar: str) -> tuple[str, int]:
@@ -77,14 +78,20 @@ def _npz_scalar_str(payload: Any, key: str) -> str:
 
 def _shape_meta_from_processor(processor_cfg: Any | None, *, camera_order: Sequence[str], video_size: Sequence[int]) -> dict:
     shape_meta = OmegaConf.to_container(DictConfig(DEFAULT_SHAPE_META), resolve=True)
-    camera_width = int(video_size[1]) // len(camera_order)
-    for meta, camera in zip(shape_meta["images"], camera_order):
-        meta["key"] = str(camera)
-        meta["shape"] = [3, int(video_size[0]), camera_width]
     if processor_cfg is not None:
         plain = OmegaConf.to_container(processor_cfg, resolve=True) if isinstance(processor_cfg, DictConfig) else processor_cfg
         if isinstance(plain, dict) and plain.get("shape_meta") is not None:
             shape_meta = plain["shape_meta"]
+            return shape_meta
+    camera_width = int(video_size[1]) // len(camera_order)
+    template = dict(shape_meta["images"][0]) if shape_meta.get("images") else {"raw_shape": [3, int(video_size[0]), camera_width]}
+    images = []
+    for camera in camera_order:
+        meta = dict(template)
+        meta["key"] = str(camera)
+        meta["shape"] = [3, int(video_size[0]), camera_width]
+        images.append(meta)
+    shape_meta["images"] = images
     return shape_meta
 
 

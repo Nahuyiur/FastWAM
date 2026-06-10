@@ -15,6 +15,7 @@ from fastwam.datasets.gembench.microsteps_9v32 import (
     DEFAULT_CACHE_CAMERA_ORDER,
     DEFAULT_CAMERA_ORDER,
     DEFAULT_FRAME_OFFSETS,
+    OFFICIAL_GEMBENCH_CAMERA_ORDER,
     SCHEMA_VERSION,
     cache_episode_path,
     make_taskvar,
@@ -80,12 +81,26 @@ def _percentiles(values: list[int]) -> dict[str, float | None]:
     }
 
 
+def _parse_camera_order(value: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",")]
+    else:
+        items = [str(item).strip() for item in value]
+    order = tuple(item for item in items if item)
+    if not order:
+        raise ValueError("camera order must contain at least one camera")
+    return order
+
+
 def _manifest_payload(
     *,
     root: Path,
     microsteps_dir: Path,
     keysteps_dir: Path,
     cache_dir: Path,
+    camera_order: tuple[str, ...],
+    cache_camera_order: tuple[str, ...],
+    image_size: int,
     demos: list[dict[str, Any]],
     shard_index: int | None,
     num_shards: int | None,
@@ -108,8 +123,9 @@ def _manifest_payload(
         "frame_offsets": list(DEFAULT_FRAME_OFFSETS),
         "action_horizon": 32,
         "num_video_frames": 9,
-        "camera_order": list(DEFAULT_CAMERA_ORDER),
-        "cache_camera_order": list(DEFAULT_CACHE_CAMERA_ORDER),
+        "camera_order": list(camera_order),
+        "cache_camera_order": list(cache_camera_order),
+        "image_size": int(image_size),
         "summary": {
             "demos": len(demos),
             "shard_index": shard_index,
@@ -122,9 +138,11 @@ def _manifest_payload(
             "eligible_32_start_count": int(eligible_starts),
             "policy_start_count": int(policy_starts),
             "eligible_32_transition_fraction": float(eligible_starts / policy_starts) if policy_starts else 0.0,
-            "cache_required_bytes_estimate_uint8": int(sum(length * len(DEFAULT_CAMERA_ORDER) * 224 * 224 * 3 for length in lengths)),
+            "cache_required_bytes_estimate_uint8": int(
+                sum(length * len(cache_camera_order) * int(image_size) * int(image_size) * 3 for length in lengths)
+            ),
             "cache_required_gib_estimate_uint8": float(
-                sum(length * len(DEFAULT_CAMERA_ORDER) * 224 * 224 * 3 for length in lengths) / (1024**3)
+                sum(length * len(cache_camera_order) * int(image_size) * int(image_size) * 3 for length in lengths) / (1024**3)
             ),
             "task_counts": dict(sorted(task_counts.items())),
             "missing_keysteps_key_count": len(missing_keysteps),
@@ -155,6 +173,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     keysteps_dir = Path(args.keysteps_dir).expanduser().resolve() if args.keysteps_dir else root / "train_dataset" / "keysteps_bbox" / seed
     cache_dir = Path(args.rgb_cache_dir).expanduser().resolve()
     output_dir = Path(args.output_dir).expanduser().resolve()
+    camera_order = _parse_camera_order(args.camera_order)
+    cache_camera_order = _parse_camera_order(args.cache_camera_order)
+    missing_cameras = [camera for camera in camera_order if camera not in cache_camera_order]
+    if missing_cameras:
+        raise ValueError(f"camera_order contains cameras absent from cache_camera_order: {missing_cameras}")
+    image_size = int(args.image_size)
+    if image_size <= 0:
+        raise ValueError(f"image_size must be positive, got {image_size}")
     if not microsteps_dir.is_dir():
         raise FileNotFoundError(f"Missing extracted microsteps dir: {microsteps_dir}")
     if not keysteps_dir.is_dir():
@@ -222,6 +248,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             microsteps_dir=microsteps_dir,
             keysteps_dir=keysteps_dir,
             cache_dir=cache_dir,
+            camera_order=camera_order,
+            cache_camera_order=cache_camera_order,
+            image_size=image_size,
             demos=demos,
             shard_index=idx,
             num_shards=num_shards,
@@ -243,6 +272,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         microsteps_dir=microsteps_dir,
         keysteps_dir=keysteps_dir,
         cache_dir=cache_dir,
+        camera_order=camera_order,
+        cache_camera_order=cache_camera_order,
+        image_size=image_size,
         demos=sorted(rows, key=lambda item: (str(item["taskvar"]), str(item["episode_key"]))),
         shard_index=None,
         num_shards=num_shards,
@@ -273,6 +305,11 @@ def main() -> int:
     parser.add_argument("--microsteps-dir", default=None)
     parser.add_argument("--keysteps-dir", default=None)
     parser.add_argument("--rgb-cache-dir", default="/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_rgb")
+    parser.add_argument("--camera-order", default=",".join(DEFAULT_CAMERA_ORDER))
+    parser.add_argument("--cache-camera-order", default=",".join(DEFAULT_CACHE_CAMERA_ORDER))
+    parser.add_argument("--official-camera-order", action="store_const", dest="camera_order", const=",".join(OFFICIAL_GEMBENCH_CAMERA_ORDER))
+    parser.add_argument("--official-cache-camera-order", action="store_const", dest="cache_camera_order", const=",".join(OFFICIAL_GEMBENCH_CAMERA_ORDER))
+    parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--num-shards", type=int, required=True)
     parser.add_argument("--max-demos", type=int, default=None)
