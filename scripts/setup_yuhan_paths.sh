@@ -92,6 +92,9 @@ if [[ -d "${COPPELIASIM_ROOT}" ]]; then
     *":${COPPELIASIM_ROOT}:"*) ;;
     *) export LD_LIBRARY_PATH="${COPPELIASIM_ROOT}:${LD_LIBRARY_PATH:-}" ;;
   esac
+  if [[ -z "${QT_QPA_PLATFORM_PLUGIN_PATH:-}" && -d "${COPPELIASIM_ROOT}/platforms" ]]; then
+    export QT_QPA_PLATFORM_PLUGIN_PATH="${COPPELIASIM_ROOT}/platforms"
+  fi
 fi
 
 mkdir -p \
