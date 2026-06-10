@@ -1,5 +1,9 @@
 # FastWAM GEMBench v1
 
+Current 9-visual/32-action 4-camera GEMBench work is documented separately in
+[`README_GEMBENCH_9V32_4CAM.md`](README_GEMBENCH_9V32_4CAM.md). This file also
+keeps older `keysteps_bbox`/3-camera notes for reproducibility.
+
 This branch adds a direct LMDB adapter for training FastWAM on GEMBench
 `train_dataset/keysteps_bbox/seed0`.
 

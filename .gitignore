@@ -7,8 +7,15 @@ apex/
 assets/
 runs
 runs/
+logs/
+wandb/
+eval10_outputs/
+eval10_preview_downloads/
 evaluate_results/
 .deepspeed*
+*.avi
+*.mp4
+*.wandb
 
 
 # ai coding
