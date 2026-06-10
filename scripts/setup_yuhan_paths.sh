@@ -95,6 +95,12 @@ if [[ -d "${COPPELIASIM_ROOT}" ]]; then
   if [[ -z "${QT_QPA_PLATFORM_PLUGIN_PATH:-}" && -d "${COPPELIASIM_ROOT}/platforms" ]]; then
     export QT_QPA_PLATFORM_PLUGIN_PATH="${COPPELIASIM_ROOT}/platforms"
   fi
+  if [[ -z "${QT_PLUGIN_PATH:-}" ]]; then
+    export QT_PLUGIN_PATH="${COPPELIASIM_ROOT}"
+  fi
+  if [[ -z "${QT_XCB_GL_INTEGRATION:-}" ]]; then
+    export QT_XCB_GL_INTEGRATION="xcb_glx"
+  fi
 fi
 
 mkdir -p \
