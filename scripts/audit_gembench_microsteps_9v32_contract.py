@@ -138,9 +138,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 break
             suffix = member.name.rsplit(".", 1)[-1] if "." in member.name else ""
             suffix_counts[suffix] += 1
-            length = _demo_len_from_tar_member(tf, member)
-            parsed["length"] = int(length)
-            parsed["available_32_starts"] = int(max(0, length - 32))
+            if args.length_source == "pkl":
+                parsed["length"] = int(_demo_len_from_tar_member(tf, member))
             parsed["cache_path"] = str(
                 cache_episode_path(
                     cache_dir,
@@ -165,6 +164,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 continue
             assert key_frameids is not None
             row["key_frameids"] = key_frameids
+            if args.length_source == "key_frameids":
+                row["length"] = int(max(key_frameids) + 1) if key_frameids else 0
             ok = bool(key_frameids) and min(key_frameids) >= 0 and max(key_frameids) < int(row["length"])
             row["keyframe_alignment_ok"] = ok
             if not ok:
@@ -172,6 +173,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 alignment_failures.append(row)
     finally:
         store.close()
+
+    for row in demos:
+        row["available_32_starts"] = int(max(0, int(row["length"]) - 32))
 
     lengths = [int(row["length"]) for row in demos]
     eligible_episodes = sum(1 for length in lengths if length >= 33)
@@ -220,6 +224,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "cache_camera_order": list(DEFAULT_CACHE_CAMERA_ORDER),
         "summary": {
             "demos": len(demos),
+            "length_source": str(args.length_source),
             "taskvars": len(task_counts),
             "length": _percentiles(lengths),
             "eligible_episodes": eligible_episodes,
@@ -246,6 +251,15 @@ def main() -> int:
     parser.add_argument("--keysteps-dir", default=None)
     parser.add_argument("--rgb-cache-dir", default="/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_rgb")
     parser.add_argument("--max-demos", type=int, default=None)
+    parser.add_argument(
+        "--length-source",
+        choices=("pkl", "key_frameids"),
+        default="pkl",
+        help=(
+            "Use `pkl` for strict demo length loading, or `key_frameids` for a fast full-dataset gate. "
+            "The render step later checks the real demo length before writing cache."
+        ),
+    )
     parser.add_argument("--min-episode-fraction", type=float, default=1.0)
     parser.add_argument("--min-transition-fraction", type=float, default=0.70)
     parser.add_argument("--output-json", required=True)

@@ -44,6 +44,7 @@ mkdir -p "${AUDIT_DIR}" logs
 PYTHONPATH=src "${PYTHON_BIN}" scripts/audit_gembench_microsteps_9v32_contract.py \
   --root "${GEMBENCH_ROOT}" \
   --rgb-cache-dir "${GEMBENCH_9V32_RGB_CACHE_DIR}" \
+  --length-source key_frameids \
   --output-json "${GEMBENCH_9V32_MANIFEST}" \
   --output-md "${AUDIT_DIR}/microsteps_9v32_contract.md"
 
