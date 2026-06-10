@@ -2,9 +2,9 @@
 # Shared path setup for FastWAM runs on jinshan_pub.
 #
 # Defaults match the current server layout:
-#   TRaCE repo: /mnt/yuhan/TRaCE
+#   FastWAM repo: /mnt/yuhan/FastWAM
 #   conda root:   /mnt/miniconda3
-#   checkpoints:  /mnt/yuhan/TRaCE/checkpoints -> /mnt/yuhan/FastWAM/checkpoints
+#   checkpoints:  /mnt/yuhan/FastWAM/checkpoints
 #
 # Every value can still be overridden by exporting the variable before sourcing
 # this file.
@@ -31,11 +31,7 @@ RLBENCH_ROOT="${RLBENCH_ROOT:-${YUHAN_ROOT}/RLBench}"
 ROBOT_3DLOTUS_ROOT="${ROBOT_3DLOTUS_ROOT:-${YUHAN_ROOT}/gembench_sim/robot-3dlotus}"
 GEMBENCH_RLBENCH_ROOT="${GEMBENCH_RLBENCH_ROOT:-${YUHAN_ROOT}/gembench_sim/RLBench}"
 GEMBENCH_PYREP_ROOT="${GEMBENCH_PYREP_ROOT:-${YUHAN_ROOT}/gembench_sim/PyRep}"
-if [[ -z "${COPPELIASIM_ROOT:-}" && -d "${YUHAN_ROOT}/gembench_sim/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04" ]]; then
-  COPPELIASIM_ROOT="${YUHAN_ROOT}/gembench_sim/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04"
-else
-  COPPELIASIM_ROOT="${COPPELIASIM_ROOT:-${YUHAN_ROOT}/TRaCE_fix/.runtime/CoppeliaSim_Pro_V4_1_0_Ubuntu20_04}"
-fi
+COPPELIASIM_ROOT="${COPPELIASIM_ROOT:-${YUHAN_ROOT}/gembench_sim/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04}"
 RLBENCH_STUB_ROOT="${RLBENCH_STUB_ROOT:-${YUHAN_ROOT}/rlbench_lerobot_tools/stubs}"
 RLBENCH_PYREP_SITE="${RLBENCH_PYREP_SITE:-${CONDA_ROOT}/envs/gembench/lib/python3.10/site-packages}"
 
