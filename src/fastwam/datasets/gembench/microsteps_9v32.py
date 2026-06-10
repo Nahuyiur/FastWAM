@@ -16,6 +16,7 @@ from .normalization import DEFAULT_SHAPE_META, GEMBenchProcessorShim, load_or_cr
 
 
 SCHEMA_VERSION = "gembench_microsteps_9v32_v1"
+VAE_LATENT_CACHE_VERSION = "gembench_microsteps_9v32_vae_latents_v1"
 DEFAULT_PROMPT = "A video recorded from a robot's point of view executing the following instruction: {task}"
 DEFAULT_FRAME_OFFSETS = (0, 4, 8, 12, 16, 20, 24, 28, 32)
 DEFAULT_CAMERA_ORDER = ("front", "wrist", "left_shoulder")
@@ -49,6 +50,14 @@ def load_manifest(path: str | Path) -> dict[str, Any]:
     return payload
 
 
+def sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).expanduser().open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def manifest_demo_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows = payload.get("demos")
     if not isinstance(rows, list):
@@ -77,6 +86,152 @@ def _shape_meta_from_processor(processor_cfg: Any | None, *, camera_order: Seque
         if isinstance(plain, dict) and plain.get("shape_meta") is not None:
             shape_meta = plain["shape_meta"]
     return shape_meta
+
+
+def build_vae_cache_dataset_config(
+    *,
+    manifest_path: str | Path,
+    manifest_sha256: str,
+    rgb_cache_dir: str | Path,
+    seed: str,
+    frame_offsets: Sequence[int],
+    action_horizon: int,
+    window_stride: int,
+    video_size: Sequence[int],
+    camera_order: Sequence[str],
+    cache_camera_order: Sequence[str],
+) -> dict[str, Any]:
+    return {
+        "manifest_path": str(Path(manifest_path).expanduser().resolve()),
+        "manifest_sha256": str(manifest_sha256),
+        "rgb_cache_dir": str(Path(rgb_cache_dir).expanduser().resolve()),
+        "seed": str(seed),
+        "source_schema_version": SCHEMA_VERSION,
+        "frame_offsets": [int(v) for v in frame_offsets],
+        "num_video_frames": len(tuple(frame_offsets)),
+        "action_horizon": int(action_horizon),
+        "window_stride": int(window_stride),
+        "video_size": [int(video_size[0]), int(video_size[1])],
+        "camera_order": [str(v) for v in camera_order],
+        "cache_camera_order": [str(v) for v in cache_camera_order],
+    }
+
+
+def window_cache_key(taskvar: str, episode_key: str, window_start: int) -> str:
+    return f"{taskvar}\t{episode_key}\t{int(window_start)}"
+
+
+class GEMBenchMicrosteps9V32VAELatentCache:
+    def __init__(
+        self,
+        cache_dir: str | Path,
+        *,
+        expected_dataset_config: dict[str, Any] | None = None,
+        expected_index: Sequence[tuple[int, int, dict[str, Any]]] | None = None,
+    ):
+        self.cache_dir = Path(cache_dir).expanduser().resolve()
+        self.manifest_path = self.cache_dir / "manifest.json"
+        self.index_path = self.cache_dir / "index.jsonl"
+        self.latents_path = self.cache_dir / "video_latents.float32.npy"
+        self.completed_path = self.cache_dir / "completed_windows.bool.npy"
+
+        self.manifest = self._load_manifest()
+        self._validate_manifest(expected_dataset_config)
+        self.rows = self._load_rows()
+        self.row_by_key = {
+            window_cache_key(row["taskvar"], row["episode_key"], int(row["window_start"])): int(row["row_id"])
+            for row in self.rows
+        }
+        if len(self.row_by_key) != len(self.rows):
+            raise ValueError(f"VAE latent cache index contains duplicate rows: {self.index_path}")
+        self.latents = np.load(self.latents_path, mmap_mode="r")
+        self.completed = np.load(self.completed_path, mmap_mode="r")
+        self._validate_arrays()
+        if expected_index is not None:
+            self._validate_index_coverage(expected_index)
+
+    def _load_manifest(self) -> dict[str, Any]:
+        if not self.manifest_path.exists():
+            raise FileNotFoundError(f"Missing GEMBench 9v32 VAE cache manifest: {self.manifest_path}")
+        payload = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        if payload.get("cache_version") != VAE_LATENT_CACHE_VERSION:
+            raise ValueError(
+                f"Unsupported GEMBench 9v32 VAE cache version: {payload.get('cache_version')!r} "
+                f"!= {VAE_LATENT_CACHE_VERSION!r}"
+            )
+        if not bool(payload.get("complete", False)):
+            raise ValueError(f"GEMBench 9v32 VAE cache is not marked complete: {self.manifest_path}")
+        return payload
+
+    def _validate_manifest(self, expected_dataset_config: dict[str, Any] | None) -> None:
+        if expected_dataset_config is None:
+            return
+        actual = self.manifest.get("dataset", {})
+        for key, expected in expected_dataset_config.items():
+            value = actual.get(key)
+            if value != expected:
+                raise ValueError(
+                    "GEMBench 9v32 VAE cache dataset config mismatch: "
+                    f"key={key!r} actual={value!r} expected={expected!r} cache={self.cache_dir}"
+                )
+
+    def _load_rows(self) -> list[dict[str, Any]]:
+        if not self.index_path.exists():
+            raise FileNotFoundError(f"Missing GEMBench 9v32 VAE cache index: {self.index_path}")
+        rows: list[dict[str, Any]] = []
+        with self.index_path.open("r", encoding="utf-8") as handle:
+            for line_no, line in enumerate(handle, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                for key in ("row_id", "taskvar", "episode_key", "window_start"):
+                    if key not in row:
+                        raise ValueError(f"Malformed VAE cache index line {line_no}: missing {key!r}")
+                rows.append(row)
+        rows.sort(key=lambda row: int(row["row_id"]))
+        for expected_id, row in enumerate(rows):
+            row_id = int(row["row_id"])
+            if row_id != expected_id:
+                raise ValueError(f"VAE cache index row_id mismatch: got {row_id} expected {expected_id}")
+        return rows
+
+    def _validate_arrays(self) -> None:
+        expected_rows = int(self.manifest["num_windows"])
+        expected_shape = tuple(int(v) for v in self.manifest["latent_shape"])
+        if tuple(self.latents.shape) != (expected_rows, *expected_shape):
+            raise ValueError(
+                f"VAE latent array shape mismatch: actual={tuple(self.latents.shape)} "
+                f"expected={(expected_rows, *expected_shape)}"
+            )
+        if tuple(self.completed.shape) != (expected_rows,):
+            raise ValueError(
+                f"VAE completion array shape mismatch: actual={tuple(self.completed.shape)} expected={(expected_rows,)}"
+            )
+        if not bool(np.all(self.completed)):
+            missing = np.where(~np.asarray(self.completed))[0][:10].tolist()
+            raise ValueError(f"GEMBench 9v32 VAE cache has incomplete rows, first_missing={missing}")
+
+    def _validate_index_coverage(self, expected_index: Sequence[tuple[int, int, dict[str, Any]]]) -> None:
+        if len(expected_index) != len(self.rows):
+            raise ValueError(f"VAE cache row count mismatch: cache={len(self.rows)} expected={len(expected_index)}")
+        for row_id, (row_idx, window_start, demo_row) in enumerate(expected_index):
+            expected_key = window_cache_key(str(demo_row["taskvar"]), str(demo_row["episode_key"]), int(window_start))
+            actual_row = self.rows[row_id]
+            actual_key = window_cache_key(
+                str(actual_row["taskvar"]),
+                str(actual_row["episode_key"]),
+                int(actual_row["window_start"]),
+            )
+            if actual_key != expected_key:
+                raise ValueError(
+                    f"VAE cache index mismatch at row_id={row_id}: actual={actual_key!r} expected={expected_key!r}"
+                )
+
+    def get(self, row: dict[str, Any], window_start: int) -> torch.Tensor:
+        key = window_cache_key(str(row["taskvar"]), str(row["episode_key"]), int(window_start))
+        row_id = self.row_by_key[key]
+        return torch.from_numpy(np.asarray(self.latents[row_id]).copy())
 
 
 class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
@@ -109,11 +264,13 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
         context_len: int = 128,
         text_dim: int = 4096,
         text_encoder_id: str = "umt5_xxl",
+        cache_text_embeddings: bool = True,
         allow_missing_text_embeds: bool = False,
         pretrained_norm_stats: str | None = None,
         norm_default_mode: str = "-2.0/2.0",
         stats_scan_limit: int = 0,
         allow_partial_cache: bool = False,
+        vae_latent_cache_dir: str | None = None,
         processor: Any | None = None,
     ):
         self.manifest_path = Path(manifest_path).expanduser().resolve()
@@ -132,10 +289,13 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
         self.context_len = int(context_len)
         self.text_dim = int(text_dim)
         self.text_encoder_id = str(text_encoder_id)
+        self.cache_text_embeddings = bool(cache_text_embeddings)
+        self._text_context_cache: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         self.allow_missing_text_embeds = bool(allow_missing_text_embeds)
         self.norm_default_mode = str(norm_default_mode)
         self.stats_scan_limit = int(stats_scan_limit)
         self.allow_partial_cache = bool(allow_partial_cache)
+        self.vae_latent_cache_dir = None if vae_latent_cache_dir in (None, "", "null") else str(vae_latent_cache_dir)
 
         if tuple(self.frame_offsets) != DEFAULT_FRAME_OFFSETS:
             raise ValueError(f"GEMBench 9v32 requires frame_offsets={DEFAULT_FRAME_OFFSETS}, got {self.frame_offsets}")
@@ -163,6 +323,7 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
         self.index = self._build_window_index()
         if not self.index:
             raise ValueError(f"No cached GEMBench 9v32 windows found from manifest={self.manifest_path}")
+        self.vae_latent_cache = self._load_vae_latent_cache()
 
         self.instruction_map = load_instruction_map(instruction_json_path)
         self.shape_meta = _shape_meta_from_processor(processor, camera_order=self.camera_order, video_size=self.video_size)
@@ -183,17 +344,30 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
         row_idx, start = self.index[idx]
         row = self.demo_rows[row_idx]
         cache_path = self._cache_path(row)
-        payload = np.load(cache_path, allow_pickle=False)
-        try:
-            self._validate_cache_payload(row, payload, cache_path)
-            rgb = np.asarray(payload["rgb"])
-            gripper = np.asarray(payload["gripper"], dtype=np.float32)
-            frame_idx = np.asarray([int(start) + offset for offset in self.frame_offsets], dtype=np.int64)
-            video = self._video_tensor(rgb[frame_idx][:, self.camera_indices])
-            action_raw = gripper[int(start) + 1 : int(start) + self.action_horizon + 1]
-            proprio_raw = gripper[int(start) : int(start) + self.action_horizon]
-        finally:
-            payload.close()
+        video = None
+        video_latents = None
+        if self.vae_latent_cache is not None:
+            video_latents = self.vae_latent_cache.get(row, int(start))
+            payload = np.load(cache_path, allow_pickle=False)
+            try:
+                self._validate_cache_payload(row, payload, cache_path)
+                gripper = np.asarray(payload["gripper"], dtype=np.float32)
+                action_raw = gripper[int(start) + 1 : int(start) + self.action_horizon + 1]
+                proprio_raw = gripper[int(start) : int(start) + self.action_horizon]
+            finally:
+                payload.close()
+        else:
+            payload = np.load(cache_path, allow_pickle=False)
+            try:
+                self._validate_cache_payload(row, payload, cache_path)
+                rgb = np.asarray(payload["rgb"])
+                gripper = np.asarray(payload["gripper"], dtype=np.float32)
+                frame_idx = np.asarray([int(start) + offset for offset in self.frame_offsets], dtype=np.int64)
+                video = self._video_tensor(rgb[frame_idx][:, self.camera_indices])
+                action_raw = gripper[int(start) + 1 : int(start) + self.action_horizon + 1]
+                proprio_raw = gripper[int(start) : int(start) + self.action_horizon]
+            finally:
+                payload.close()
 
         action, proprio, action_dim_is_pad, proprio_dim_is_pad = self.processor.normalize(
             torch.as_tensor(action_raw, dtype=torch.float32),
@@ -210,8 +384,7 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
         context[~context_mask.bool()] = 0.0
         context_mask = torch.ones_like(context_mask, dtype=torch.bool)
 
-        return {
-            "video": video,
+        sample = {
             "action": action,
             "proprio": proprio,
             "prompt": prompt,
@@ -226,6 +399,11 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
             "episode_key": str(row["episode_key"]),
             "window_start": int(start),
         }
+        if video_latents is None:
+            sample["video"] = video
+        else:
+            sample["video_latents"] = video_latents
+        return sample
 
     def _resolve_taskvars(self, taskvars: Sequence[str] | str | None) -> set[str] | None:
         if taskvars is None:
@@ -269,6 +447,31 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
                 starts = starts[: self.max_windows_per_demo]
             out.extend((row_idx, start) for start in starts)
         return out
+
+    def _window_index_with_rows(self) -> list[tuple[int, int, dict[str, Any]]]:
+        return [(row_idx, start, self.demo_rows[row_idx]) for row_idx, start in self.index]
+
+    def _load_vae_latent_cache(self) -> GEMBenchMicrosteps9V32VAELatentCache | None:
+        if self.vae_latent_cache_dir is None:
+            return None
+        manifest_sha = sha256_file(self.manifest_path)
+        expected_config = build_vae_cache_dataset_config(
+            manifest_path=self.manifest_path,
+            manifest_sha256=manifest_sha,
+            rgb_cache_dir=self.rgb_cache_dir,
+            seed=self.seed,
+            frame_offsets=self.frame_offsets,
+            action_horizon=self.action_horizon,
+            window_stride=self.window_stride,
+            video_size=self.video_size,
+            camera_order=self.camera_order,
+            cache_camera_order=self.cache_camera_order,
+        )
+        return GEMBenchMicrosteps9V32VAELatentCache(
+            self.vae_latent_cache_dir,
+            expected_dataset_config=expected_config,
+            expected_index=self._window_index_with_rows(),
+        )
 
     def _cache_path(self, row: dict[str, Any]) -> Path:
         if row.get("cache_path"):
@@ -320,9 +523,10 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
         t, n, c, h, w = tensor.shape
         camera_h = self.video_size[0]
         camera_w = self.video_size[1] // n
-        tensor = tensor.reshape(t * n, c, h, w)
-        tensor = F.interpolate(tensor, size=(camera_h, camera_w), mode="bilinear", align_corners=False)
-        tensor = tensor.reshape(t, n, c, camera_h, camera_w)
+        if h != camera_h or w != camera_w:
+            tensor = tensor.reshape(t * n, c, h, w)
+            tensor = F.interpolate(tensor, size=(camera_h, camera_w), mode="bilinear", align_corners=False)
+            tensor = tensor.reshape(t, n, c, camera_h, camera_w)
         video = torch.cat([tensor[:, i] for i in range(n)], dim=-1)
         video = video * 2.0 - 1.0
         return video.permute(1, 0, 2, 3).contiguous()
@@ -359,6 +563,8 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
             raise ValueError("text_embedding_cache_dir is not set.")
         cache_dir = Path(self.text_embedding_cache_dir)
         hashed = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        if self.cache_text_embeddings and hashed in self._text_context_cache:
+            return self._text_context_cache[hashed]
         cache_path = cache_dir / f"{hashed}.t5_len{self.context_len}.{self.text_encoder_id}.pt"
         if not cache_path.exists():
             if self.allow_missing_text_embeds:
@@ -371,6 +577,8 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
         mask = payload["mask"].bool()
         if context.ndim != 2 or mask.ndim != 1:
             raise ValueError(f"Invalid text cache payload shapes in {cache_path}: {tuple(context.shape)}, {tuple(mask.shape)}")
+        if self.cache_text_embeddings:
+            self._text_context_cache[hashed] = (context, mask)
         return context, mask
 
     def _empty_text_context(self) -> tuple[torch.Tensor, torch.Tensor]:

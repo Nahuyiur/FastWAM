@@ -15,6 +15,7 @@ export PATH="${FASTWAM_CONDA_ENV}/bin:${PATH}"
 RUN_ID="${RUN_ID:-gembench_wam_9v32_b4a1_$(date +%Y%m%d_%H%M%S)}"
 export GEMBENCH_9V32_MANIFEST="${GEMBENCH_9V32_MANIFEST:-${GEMBENCH_ROOT}/fastwam_cache/microsteps_9v32_manifest.json}"
 export GEMBENCH_9V32_RGB_CACHE_DIR="${GEMBENCH_9V32_RGB_CACHE_DIR:-${GEMBENCH_ROOT}/fastwam_cache/microsteps_9v32_rgb}"
+export GEMBENCH_9V32_VAE_CACHE_DIR="${GEMBENCH_9V32_VAE_CACHE_DIR:-}"
 AUDIT_DIR="${GEMBENCH_9V32_AUDIT_DIR:-runs/gembench_microsteps_9v32_audits/${RUN_ID}}"
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
@@ -100,4 +101,11 @@ add_hydra_override_from_env FASTWAM_OUTPUT_DIR output_dir
 echo "[gembench-9v32-train] run_id=${RUN_ID} task=${TASK_NAME} nproc=${NPROC_PER_NODE}"
 echo "[gembench-9v32-train] manifest=${GEMBENCH_9V32_MANIFEST}"
 echo "[gembench-9v32-train] rgb_cache_dir=${GEMBENCH_9V32_RGB_CACHE_DIR}"
+if [[ -n "${GEMBENCH_9V32_VAE_CACHE_DIR}" ]]; then
+  if [[ ! -f "${GEMBENCH_9V32_VAE_CACHE_DIR}/manifest.json" ]]; then
+    echo "[gembench-9v32-train] missing VAE latent cache manifest: ${GEMBENCH_9V32_VAE_CACHE_DIR}/manifest.json" >&2
+    exit 1
+  fi
+  echo "[gembench-9v32-train] vae_latent_cache_dir=${GEMBENCH_9V32_VAE_CACHE_DIR}"
+fi
 bash scripts/train_zero2.sh "${NPROC_PER_NODE}" "task=${TASK_NAME}" "${TRAIN_OVERRIDES[@]}" "$@" "${WANDB_OVERRIDES[@]}"

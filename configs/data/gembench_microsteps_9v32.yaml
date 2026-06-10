@@ -12,8 +12,10 @@ train:
   window_stride: 1
   max_windows_per_demo: null
   taskvars: null
+  vae_latent_cache_dir: ${oc.env:GEMBENCH_9V32_VAE_CACHE_DIR,null}
   text_embedding_cache_dir: ./data/text_embeds_cache/gembench_microsteps_9v32
   context_len: 128
+  cache_text_embeddings: true
   allow_missing_text_embeds: false
   pretrained_norm_stats: ./data/gembench_microsteps_9v32_dataset_stats.json
   norm_default_mode: "-2.0/2.0"
@@ -37,8 +39,10 @@ val:
   window_stride: 8
   max_windows_per_demo: 1
   taskvars: null
+  vae_latent_cache_dir: null
   text_embedding_cache_dir: ./data/text_embeds_cache/gembench_microsteps_9v32
   context_len: 128
+  cache_text_embeddings: true
   allow_missing_text_embeds: false
   pretrained_norm_stats: ./data/gembench_microsteps_9v32_dataset_stats.json
   norm_default_mode: "-2.0/2.0"
