@@ -265,6 +265,7 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
         text_dim: int = 4096,
         text_encoder_id: str = "umt5_xxl",
         cache_text_embeddings: bool = True,
+        cache_gripper_arrays: bool = True,
         allow_missing_text_embeds: bool = False,
         pretrained_norm_stats: str | None = None,
         norm_default_mode: str = "-2.0/2.0",
@@ -291,6 +292,8 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
         self.text_encoder_id = str(text_encoder_id)
         self.cache_text_embeddings = bool(cache_text_embeddings)
         self._text_context_cache: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+        self.cache_gripper_arrays = bool(cache_gripper_arrays)
+        self._gripper_cache: dict[str, np.ndarray] = {}
         self.allow_missing_text_embeds = bool(allow_missing_text_embeds)
         self.norm_default_mode = str(norm_default_mode)
         self.stats_scan_limit = int(stats_scan_limit)
@@ -348,14 +351,9 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
         video_latents = None
         if self.vae_latent_cache is not None:
             video_latents = self.vae_latent_cache.get(row, int(start))
-            payload = np.load(cache_path, allow_pickle=False)
-            try:
-                self._validate_cache_payload(row, payload, cache_path)
-                gripper = np.asarray(payload["gripper"], dtype=np.float32)
-                action_raw = gripper[int(start) + 1 : int(start) + self.action_horizon + 1]
-                proprio_raw = gripper[int(start) : int(start) + self.action_horizon]
-            finally:
-                payload.close()
+            gripper = self._load_gripper(row, cache_path)
+            action_raw = gripper[int(start) + 1 : int(start) + self.action_horizon + 1]
+            proprio_raw = gripper[int(start) : int(start) + self.action_horizon]
         else:
             payload = np.load(cache_path, allow_pickle=False)
             try:
@@ -447,6 +445,21 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
                 starts = starts[: self.max_windows_per_demo]
             out.extend((row_idx, start) for start in starts)
         return out
+
+    def _load_gripper(self, row: dict[str, Any], cache_path: Path) -> np.ndarray:
+        key = str(cache_path)
+        if self.cache_gripper_arrays and key in self._gripper_cache:
+            return self._gripper_cache[key]
+        payload = np.load(cache_path, allow_pickle=False)
+        try:
+            self._validate_cache_payload(row, payload, cache_path)
+            gripper = np.asarray(payload["gripper"], dtype=np.float32)
+            if self.cache_gripper_arrays:
+                gripper = np.ascontiguousarray(gripper)
+                self._gripper_cache[key] = gripper
+            return gripper
+        finally:
+            payload.close()
 
     def _window_index_with_rows(self) -> list[tuple[int, int, dict[str, Any]]]:
         return [(row_idx, start, self.demo_rows[row_idx]) for row_idx, start in self.index]

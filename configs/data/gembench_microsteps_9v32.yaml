@@ -16,6 +16,7 @@ train:
   text_embedding_cache_dir: ./data/text_embeds_cache/gembench_microsteps_9v32
   context_len: 128
   cache_text_embeddings: true
+  cache_gripper_arrays: true
   allow_missing_text_embeds: false
   pretrained_norm_stats: ./data/gembench_microsteps_9v32_dataset_stats.json
   norm_default_mode: "-2.0/2.0"
@@ -43,6 +44,7 @@ val:
   text_embedding_cache_dir: ./data/text_embeds_cache/gembench_microsteps_9v32
   context_len: 128
   cache_text_embeddings: true
+  cache_gripper_arrays: true
   allow_missing_text_embeds: false
   pretrained_norm_stats: ./data/gembench_microsteps_9v32_dataset_stats.json
   norm_default_mode: "-2.0/2.0"
