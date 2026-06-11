@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,21 @@ def _relative_cache_path(path: Path, cache_dir: Path) -> str:
         return str(path)
 
 
+def _array_metadata(path: Path, key: str) -> tuple[tuple[int, ...], np.dtype]:
+    with zipfile.ZipFile(path, "r") as zf:
+        with zf.open(f"{key}.npy", "r") as handle:
+            version = np.lib.format.read_magic(handle)
+            if version == (1, 0):
+                shape, _, dtype = np.lib.format.read_array_header_1_0(handle)
+            elif version == (2, 0):
+                shape, _, dtype = np.lib.format.read_array_header_2_0(handle)
+            elif version == (3, 0):
+                shape, _, dtype = np.lib.format.read_array_header_3_0(handle)
+            else:
+                raise ValueError(f"Unsupported npy version for {key!r}: {version}")
+    return tuple(int(v) for v in shape), np.dtype(dtype)
+
+
 def _is_valid_cache(row: dict[str, Any], path: Path, *, expected_camera_order: tuple[str, ...]) -> tuple[bool, str | None]:
     if not path.is_file():
         return False, "missing_cache"
@@ -59,13 +75,15 @@ def _is_valid_cache(row: dict[str, Any], path: Path, *, expected_camera_order: t
             camera_order = tuple(str(value) for value in np.asarray(payload["camera_order"]).tolist())
             if camera_order != expected_camera_order:
                 return False, f"bad_camera_order={camera_order}"
-            rgb = payload["rgb"]
-            gripper = payload["gripper"]
+            rgb_shape, rgb_dtype = _array_metadata(path, "rgb")
+            gripper_shape, _ = _array_metadata(path, "gripper")
             length = int(row["length"])
-            if rgb.ndim != 5 or rgb.shape[0] != length or rgb.shape[1] != len(expected_camera_order) or rgb.shape[-1] != 3:
-                return False, f"bad_rgb_shape={tuple(rgb.shape)}"
-            if gripper.shape != (length, 8):
-                return False, f"bad_gripper_shape={tuple(gripper.shape)}"
+            if len(rgb_shape) != 5 or rgb_shape[0] != length or rgb_shape[1] != len(expected_camera_order) or rgb_shape[-1] != 3:
+                return False, f"bad_rgb_shape={rgb_shape}"
+            if rgb_dtype != np.dtype(np.uint8):
+                return False, f"bad_rgb_dtype={rgb_dtype}"
+            if gripper_shape != (length, 8):
+                return False, f"bad_gripper_shape={gripper_shape}"
             return True, None
         finally:
             payload.close()

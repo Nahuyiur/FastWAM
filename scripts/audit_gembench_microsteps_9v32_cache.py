@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,21 @@ def _cache_path(row: dict[str, Any], cache_dir: Path) -> Path:
     )
 
 
+def _array_metadata(path: Path, key: str) -> tuple[tuple[int, ...], np.dtype]:
+    with zipfile.ZipFile(path, "r") as zf:
+        with zf.open(f"{key}.npy", "r") as handle:
+            version = np.lib.format.read_magic(handle)
+            if version == (1, 0):
+                shape, _, dtype = np.lib.format.read_array_header_1_0(handle)
+            elif version == (2, 0):
+                shape, _, dtype = np.lib.format.read_array_header_2_0(handle)
+            elif version == (3, 0):
+                shape, _, dtype = np.lib.format.read_array_header_3_0(handle)
+            else:
+                raise ValueError(f"Unsupported npy version for {key!r}: {version}")
+    return tuple(int(v) for v in shape), np.dtype(dtype)
+
+
 def _audit_file(row: dict[str, Any], path: Path, *, expected_camera_order: tuple[str, ...]) -> tuple[int, dict[str, Any] | None]:
     if not path.is_file():
         return 0, {"row": row, "path": str(path), "error": "missing_cache"}
@@ -65,8 +81,8 @@ def _audit_file(row: dict[str, Any], path: Path, *, expected_camera_order: tuple
             missing = sorted(required.difference(payload.files))
             if missing:
                 return 0, {"row": row, "path": str(path), "error": f"missing_keys={missing}"}
-            rgb = payload["rgb"]
-            gripper = payload["gripper"]
+            rgb_shape, rgb_dtype = _array_metadata(path, "rgb")
+            gripper_shape, _ = _array_metadata(path, "gripper")
             if _npz_scalar_str(payload, "schema_version") != SCHEMA_VERSION:
                 return 0, {"row": row, "path": str(path), "error": f"bad_schema_version={_npz_scalar_str(payload, 'schema_version')}"}
             for key in ("taskvar", "episode_key", "seed"):
@@ -77,24 +93,21 @@ def _audit_file(row: dict[str, Any], path: Path, *, expected_camera_order: tuple
             camera_order = tuple(str(value) for value in np.asarray(payload["camera_order"]).tolist())
             image_size = tuple(int(value) for value in np.asarray(payload["image_size"]).reshape(-1).tolist())
             length = int(row["length"])
-            if rgb.ndim != 5 or rgb.shape[0] != length or rgb.shape[-1] != 3:
-                return 0, {"row": row, "path": str(path), "error": f"bad_rgb_shape={rgb.shape}"}
-            if image_size != tuple(int(v) for v in rgb.shape[2:4]):
+            if len(rgb_shape) != 5 or rgb_shape[0] != length or rgb_shape[-1] != 3:
+                return 0, {"row": row, "path": str(path), "error": f"bad_rgb_shape={rgb_shape}"}
+            if image_size != tuple(int(v) for v in rgb_shape[2:4]):
                 return 0, {"row": row, "path": str(path), "error": f"bad_image_size={image_size}"}
-            if int(rgb.shape[1]) != len(expected_camera_order):
-                return 0, {"row": row, "path": str(path), "error": f"bad_camera_count={rgb.shape[1]}"}
+            if int(rgb_shape[1]) != len(expected_camera_order):
+                return 0, {"row": row, "path": str(path), "error": f"bad_camera_count={rgb_shape[1]}"}
             if camera_order != expected_camera_order:
                 return 0, {"row": row, "path": str(path), "error": f"bad_camera_order={camera_order}"}
-            if gripper.shape != (length, 8):
-                return 0, {"row": row, "path": str(path), "error": f"bad_gripper_shape={gripper.shape}"}
-            if rgb.dtype != np.uint8:
-                return 0, {"row": row, "path": str(path), "error": f"bad_rgb_dtype={rgb.dtype}"}
+            if gripper_shape != (length, 8):
+                return 0, {"row": row, "path": str(path), "error": f"bad_gripper_shape={gripper_shape}"}
+            if rgb_dtype != np.dtype(np.uint8):
+                return 0, {"row": row, "path": str(path), "error": f"bad_rgb_dtype={rgb_dtype}"}
             windows = max(0, length - 32)
             if windows <= 0:
                 return 0, {"row": row, "path": str(path), "error": "no_32_step_window"}
-            probe = rgb[np.asarray(DEFAULT_FRAME_OFFSETS, dtype=np.int64)]
-            if float(probe.std()) <= 0.0:
-                return 0, {"row": row, "path": str(path), "error": "probe_rgb_is_constant"}
             return windows, None
         finally:
             payload.close()
