@@ -5,6 +5,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FASTWAM_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${FASTWAM_ROOT}"
 source scripts/setup_yuhan_paths.sh
+if [[ -z "${__GEMBENCH_WANDB_PROJECT_USER_PROVIDED:-}" ]]; then
+  if [[ -n "${WANDB_PROJECT:-}" ]]; then
+    export __GEMBENCH_WANDB_PROJECT_USER_PROVIDED=1
+  else
+    export __GEMBENCH_WANDB_PROJECT_USER_PROVIDED=0
+  fi
+fi
+export WANDB_PROJECT="${WANDB_PROJECT:-fastwam-gembench-9v32}"
 source scripts/setup_gembench_wandb.sh
 
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"

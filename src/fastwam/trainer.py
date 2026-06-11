@@ -172,6 +172,10 @@ class Wan22Trainer:
         wandb_job_type = None if wandb_job_type in (None, "null", "") else str(wandb_job_type)
         wandb_subproject = self.cfg.wandb.get("subproject", None)
         wandb_subproject = None if wandb_subproject in (None, "null", "") else str(wandb_subproject)
+        wandb_id = self.cfg.wandb.get("id", None)
+        wandb_id = None if wandb_id in (None, "null", "") else str(wandb_id)
+        wandb_resume = self.cfg.wandb.get("resume", None)
+        wandb_resume = None if wandb_resume in (None, "null", "") else str(wandb_resume)
         wandb_tags = self.cfg.wandb.get("tags", None)
         if wandb_tags in (None, "null", ""):
             wandb_tags = None
@@ -184,6 +188,8 @@ class Wan22Trainer:
             entity=self.cfg.wandb.workspace,
             project=self.cfg.wandb.project,
             name=self.cfg.wandb.name,
+            id=wandb_id,
+            resume=wandb_resume,
             group=wandb_group,
             job_type=wandb_job_type,
             tags=wandb_tags,
@@ -206,16 +212,20 @@ class Wan22Trainer:
                     self.checkpoint_cfg.get("advance_scheduler_to_step", True)
                 ),
                 "legacy_resume": self._none_if_nullish(self.resume),
+                "wandb_id": wandb_id,
+                "wandb_resume": wandb_resume,
             },
             mode=self.cfg.wandb.mode,
             dir=self.output_dir,
         )
         logger.info(
-            "Initialized wandb run: workspace=%s project=%s group=%s name=%s subproject=%s",
+            "Initialized wandb run: workspace=%s project=%s group=%s name=%s id=%s resume=%s subproject=%s",
             self.cfg.wandb.workspace,
             self.cfg.wandb.project,
             wandb_group,
             self.cfg.wandb.name,
+            wandb_id,
+            wandb_resume,
             wandb_subproject,
         )
 

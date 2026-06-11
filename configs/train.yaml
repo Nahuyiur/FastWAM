@@ -89,6 +89,8 @@ wandb:
   tags: []
   subproject: null
   mode: online
+  id: null
+  resume: null
 
 hydra:
   job:

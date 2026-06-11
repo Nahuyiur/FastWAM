@@ -10,6 +10,21 @@ if [[ -f /mnt/yuhan/basic_info.sh ]]; then
   set -u
 fi
 
+if [[ -z "${__GEMBENCH_WANDB_PROJECT_USER_PROVIDED:-}" ]]; then
+  if [[ -n "${WANDB_PROJECT:-}" ]]; then
+    export __GEMBENCH_WANDB_PROJECT_USER_PROVIDED=1
+  else
+    export __GEMBENCH_WANDB_PROJECT_USER_PROVIDED=0
+  fi
+fi
+if [[ -z "${__GEMBENCH_WANDB_RUN_ID_USER_PROVIDED:-}" ]]; then
+  if [[ -n "${WANDB_RUN_ID:-}" ]]; then
+    export __GEMBENCH_WANDB_RUN_ID_USER_PROVIDED=1
+  else
+    export __GEMBENCH_WANDB_RUN_ID_USER_PROVIDED=0
+  fi
+fi
+
 if [[ -n "${WANDB_TOKEN:-}" && -z "${WANDB_API_KEY:-}" ]]; then
   export WANDB_API_KEY="${WANDB_TOKEN}"
 fi
@@ -33,6 +48,11 @@ gembench_wandb_hydra_overrides() {
   local run_name="${2:?run_name required}"
   local group="${3:-${subproject}}"
 
+  if [[ -n "${WANDB_RUN_ID:-}" && "${__GEMBENCH_WANDB_RUN_ID_USER_PROVIDED:-0}" == "1" && "${__GEMBENCH_WANDB_PROJECT_USER_PROVIDED:-0}" != "1" ]]; then
+    echo "[gembench-wandb] WANDB_RUN_ID was provided explicitly; set WANDB_PROJECT to the original run project to avoid cross-project resume." >&2
+    return 2
+  fi
+
   printf "%s\\n" \
     "wandb.enabled=${WANDB_ENABLED}" \
     "wandb.project=${WANDB_PROJECT}" \
@@ -42,6 +62,12 @@ gembench_wandb_hydra_overrides() {
     "wandb.tags=[gembench,${subproject}]" \
     "wandb.subproject=${subproject}" \
     "wandb.mode=${WANDB_MODE}"
+
+  if [[ -n "${WANDB_RUN_ID:-}" ]]; then
+    printf "%s\\n" \
+      "wandb.id=${WANDB_RUN_ID}" \
+      "wandb.resume=${WANDB_RESUME:-allow}"
+  fi
 
   if [[ -n "${WANDB_ENTITY:-}" ]]; then
     printf "%s\\n" "wandb.workspace=${WANDB_ENTITY}"
