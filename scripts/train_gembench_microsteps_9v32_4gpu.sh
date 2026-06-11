@@ -65,7 +65,10 @@ if [[ -n "${FASTWAM_PROXY:-}" && -z "${http_proxy:-}${https_proxy:-}${HTTP_PROXY
   export HTTPS_PROXY="${FASTWAM_PROXY}"
 fi
 if [[ "${PRECOMPUTE_GEMBENCH_TEXT:-1}" == "1" ]]; then
-  "${PYTHON_BIN}" scripts/precompute_gembench_text_embeds.py --no-redirect-common-files --cache-dir "${CACHE_DIR}"
+  "${PYTHON_BIN}" scripts/precompute_gembench_text_embeds.py \
+    --no-redirect-common-files \
+    --cache-dir "${CACHE_DIR}" \
+    --text-encoder-id umt5_xxl
 fi
 
 export ACCELERATE_CONFIG_FILE="${ACCELERATE_CONFIG_FILE:-scripts/accelerate_configs/accelerate_zero2_ds.yaml}"

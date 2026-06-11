@@ -50,6 +50,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--model-id", default="Wan-AI/Wan2.2-TI2V-5B")
     parser.add_argument("--tokenizer-model-id", default="Wan-AI/Wan2.1-T2V-1.3B")
+    parser.add_argument("--text-encoder-id", default=None, help="Cache filename suffix expected by the dataset. Defaults to a normalized model id.")
     parser.add_argument("--redirect-common-files", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--overwrite", action="store_true")
@@ -57,7 +58,7 @@ def main():
 
     cache_dir = Path(args.cache_dir).expanduser()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    enc_id = _model_id_to_enc_id(args.model_id)
+    enc_id = str(args.text_encoder_id or _model_id_to_enc_id(args.model_id))
 
     taskvars = _discover_taskvars(args)
     instruction_map = load_instruction_map(args.instruction_json_path)

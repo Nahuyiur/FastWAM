@@ -49,3 +49,50 @@ gembench_wandb_hydra_overrides() {
     printf "%s\\n" "wandb.workspace=${WANDB_WORKSPACE}"
   fi
 }
+
+gembench_filter_wandb_hydra_overrides() {
+  local -a defaults=()
+  local -a user_args=()
+  local seen_separator=0
+  local arg
+  for arg in "$@"; do
+    if [[ "${arg}" == "--" && "${seen_separator}" == "0" ]]; then
+      seen_separator=1
+    elif [[ "${seen_separator}" == "0" ]]; then
+      defaults+=("${arg}")
+    else
+      user_args+=("${arg}")
+    fi
+  done
+
+  local -a user_wandb_keys=()
+  local key
+  for arg in "${user_args[@]}"; do
+    case "${arg}" in
+      wandb.*=*)
+        user_wandb_keys+=("${arg%%=*}")
+        ;;
+      +wandb.*=*|++wandb.*=*)
+        key="${arg%%=*}"
+        key="${key#++}"
+        key="${key#+}"
+        user_wandb_keys+=("${key}")
+        ;;
+    esac
+  done
+
+  local override skip user_key
+  for override in "${defaults[@]}"; do
+    key="${override%%=*}"
+    skip=0
+    for user_key in "${user_wandb_keys[@]}"; do
+      if [[ "${key}" == "${user_key}" ]]; then
+        skip=1
+        break
+      fi
+    done
+    if [[ "${skip}" == "0" ]]; then
+      printf "%s\\n" "${override}"
+    fi
+  done
+}
