@@ -1,0 +1,35 @@
+suite: test
+seeds: "200"
+taskvar_splits:
+  - train
+  - test_l2
+  - test_l3
+
+demos_per_taskvar: 1
+num_trials: 10
+taskvars:
+  - close_fridge+0
+  - close_laptop_lid+0
+  - close_microwave+0
+  - open_box+0
+  - pick_and_lift+0
+  - put_cube_in_safe+0
+  - pick_and_lift+14
+  - open_fridge+0
+  - open_laptop_lid+0
+  - open_microwave+0
+
+num_inference_steps: 10
+max_steps: 25
+max_tries: 10
+initial_success_policy: mark_invalid
+
+record_video: true
+video_mode: official_recorder
+video_fps: 30
+video_resolution: 480
+video_include_robot_cameras: true
+video_recorder_required: true
+video_initial_snap: true
+min_video_frames: 60
+write_official_preds: false
