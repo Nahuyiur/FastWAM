@@ -127,11 +127,16 @@ def render_rows(args: argparse.Namespace) -> dict[str, Any]:
     cache_dir = Path(args.rgb_cache_dir or manifest["rgb_cache_dir"]).expanduser().resolve()
     seed = str(args.seed)
     microsteps_tar = Path(args.microsteps_tar).expanduser().resolve() if args.microsteps_tar else root / "train_dataset" / "microsteps.tar.gz"
-    data_dir_candidate = root / "train_dataset" / "microsteps" / seed
-    if args.dry_run and not data_dir_candidate.is_dir() and not args.extract_if_missing:
-        data_dir = data_dir_candidate
+    if args.microsteps_dir:
+        data_dir = Path(args.microsteps_dir).expanduser().resolve()
+        if not data_dir.is_dir():
+            raise FileNotFoundError(f"Missing extracted microsteps dir: {data_dir}")
     else:
-        data_dir = _ensure_microsteps_dir(root, microsteps_tar, seed, extract_if_missing=bool(args.extract_if_missing))
+        data_dir_candidate = root / "train_dataset" / "microsteps" / seed
+        if args.dry_run and not data_dir_candidate.is_dir() and not args.extract_if_missing:
+            data_dir = data_dir_candidate
+        else:
+            data_dir = _ensure_microsteps_dir(root, microsteps_tar, seed, extract_if_missing=bool(args.extract_if_missing))
     taskvars = None if args.taskvars is None else {item.strip() for item in args.taskvars.split(",") if item.strip()}
     rows = _selected_rows(manifest, max_demos=args.max_demos, taskvars=taskvars)
     camera_order = tuple(args.cache_camera_order.split(","))
@@ -285,6 +290,7 @@ def main() -> int:
     parser.add_argument("--root", default="/mnt/yuhan/datasets/GEMBench")
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--rgb-cache-dir", default=None)
+    parser.add_argument("--microsteps-dir", default=None)
     parser.add_argument("--microsteps-tar", default=None)
     parser.add_argument("--seed", default="seed0")
     parser.add_argument("--robot-3dlotus-root", default=None)

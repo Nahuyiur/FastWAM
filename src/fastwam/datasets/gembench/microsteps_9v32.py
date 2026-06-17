@@ -353,27 +353,122 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         row_idx, start = self.index[idx]
         row = self.demo_rows[row_idx]
-        cache_path = self._cache_path(row)
-        video = None
-        video_latents = None
         if self.vae_latent_cache is not None:
+            cache_path = self._cache_path(row)
             video_latents = self.vae_latent_cache.get(row, int(start))
             gripper = self._load_gripper(row, cache_path)
             action_raw = gripper[int(start) + 1 : int(start) + self.action_horizon + 1]
             proprio_raw = gripper[int(start) : int(start) + self.action_horizon]
-        else:
-            payload = np.load(cache_path, allow_pickle=False)
-            try:
-                self._validate_cache_payload(row, payload, cache_path)
-                rgb = np.asarray(payload["rgb"])
-                gripper = np.asarray(payload["gripper"], dtype=np.float32)
-                frame_idx = np.asarray([int(start) + offset for offset in self.frame_offsets], dtype=np.int64)
-                video = self._video_tensor(rgb[frame_idx][:, self.camera_indices])
-                action_raw = gripper[int(start) + 1 : int(start) + self.action_horizon + 1]
-                proprio_raw = gripper[int(start) : int(start) + self.action_horizon]
-            finally:
-                payload.close()
+            sample = self._make_sample_from_arrays(
+                row=row,
+                start=int(start),
+                action_raw=action_raw,
+                proprio_raw=proprio_raw,
+                video=None,
+            )
+            sample["video_latents"] = video_latents
+            return sample
 
+        return self._load_rgb_window_sample(row_idx=row_idx, start=int(start))
+
+    def sample_autoreg_sequence(
+        self,
+        *,
+        num_chunks: int,
+        stride: int = 32,
+        seed: int | None = None,
+        index: int | None = None,
+    ) -> dict[str, Any]:
+        """Return contiguous 9V32 windows for open-loop WAM diagnostics.
+
+        This helper intentionally does not mutate `self.index`, so training
+        sampling and VAE-cache provenance stay unchanged even when validation is
+        configured with `max_windows_per_demo=1`.
+        """
+        num_chunks = int(num_chunks)
+        stride = int(stride)
+        if num_chunks <= 0:
+            raise ValueError(f"num_chunks must be positive, got {num_chunks}")
+        if stride <= 0:
+            raise ValueError(f"stride must be positive, got {stride}")
+
+        candidates = self._autoreg_anchor_candidates(num_chunks=num_chunks, stride=stride)
+        if not candidates:
+            raise ValueError(
+                "No GEMBench 9V32 demo supports autoregressive rollout: "
+                f"num_chunks={num_chunks} stride={stride} action_horizon={self.action_horizon} "
+                f"manifest={self.manifest_path}"
+            )
+        if index is None:
+            rng = np.random.default_rng(seed)
+            candidate_idx = int(rng.integers(0, len(candidates)))
+        else:
+            candidate_idx = int(index) % len(candidates)
+
+        row_idx, base_start = candidates[candidate_idx]
+        row = self.demo_rows[row_idx]
+        starts = [int(base_start) + chunk_idx * stride for chunk_idx in range(num_chunks)]
+        samples = [self._load_rgb_window_sample(row_idx=row_idx, start=start) for start in starts]
+        videos = torch.stack([sample["video"] for sample in samples], dim=0)
+        gt_video_sequence = torch.cat(
+            [videos[0, :, 0:1], *[videos[chunk_idx, :, 1:] for chunk_idx in range(num_chunks)]],
+            dim=1,
+        ).contiguous()
+        return {
+            "samples": samples,
+            "video": videos,
+            "gt_video_sequence": gt_video_sequence,
+            "action": torch.stack([sample["action"] for sample in samples], dim=0),
+            "proprio": torch.stack([sample["proprio"] for sample in samples], dim=0),
+            "prompt": samples[0]["prompt"],
+            "context": samples[0]["context"],
+            "context_mask": samples[0]["context_mask"],
+            "taskvar": str(row["taskvar"]),
+            "episode_key": str(row["episode_key"]),
+            "row_idx": int(row_idx),
+            "base_start": int(base_start),
+            "window_starts": starts,
+            "num_chunks": num_chunks,
+            "chunk_stride": stride,
+            "candidate_count": len(candidates),
+        }
+
+    def _load_rgb_window_sample(self, *, row_idx: int, start: int) -> dict[str, Any]:
+        row = self.demo_rows[int(row_idx)]
+        length = int(row["length"])
+        if int(start) < 0 or int(start) + self.action_horizon >= length:
+            raise IndexError(
+                f"Invalid GEMBench 9V32 window start={start} length={length} action_horizon={self.action_horizon}"
+            )
+        cache_path = self._cache_path(row)
+        payload = np.load(cache_path, allow_pickle=False)
+        try:
+            self._validate_cache_payload(row, payload, cache_path)
+            rgb = np.asarray(payload["rgb"])
+            gripper = np.asarray(payload["gripper"], dtype=np.float32)
+            frame_idx = np.asarray([int(start) + offset for offset in self.frame_offsets], dtype=np.int64)
+            video = self._video_tensor(rgb[frame_idx][:, self.camera_indices])
+            action_raw = gripper[int(start) + 1 : int(start) + self.action_horizon + 1]
+            proprio_raw = gripper[int(start) : int(start) + self.action_horizon]
+            return self._make_sample_from_arrays(
+                row=row,
+                start=int(start),
+                action_raw=action_raw,
+                proprio_raw=proprio_raw,
+                video=video,
+            )
+        finally:
+            payload.close()
+
+    def _make_sample_from_arrays(
+        self,
+        *,
+        row: dict[str, Any],
+        start: int,
+        action_raw: np.ndarray,
+        proprio_raw: np.ndarray,
+        video: torch.Tensor | None,
+    ) -> dict[str, Any]:
         action, proprio, action_dim_is_pad, proprio_dim_is_pad = self.processor.normalize(
             torch.as_tensor(action_raw, dtype=torch.float32),
             torch.as_tensor(proprio_raw, dtype=torch.float32),
@@ -404,11 +499,18 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
             "episode_key": str(row["episode_key"]),
             "window_start": int(start),
         }
-        if video_latents is None:
+        if video is not None:
             sample["video"] = video
-        else:
-            sample["video_latents"] = video_latents
         return sample
+
+    def _autoreg_anchor_candidates(self, *, num_chunks: int, stride: int) -> list[tuple[int, int]]:
+        required_span = (int(num_chunks) - 1) * int(stride) + self.action_horizon
+        out: list[tuple[int, int]] = []
+        for row_idx, row in enumerate(self.demo_rows):
+            length = int(row["length"])
+            count = max(0, length - required_span)
+            out.extend((row_idx, start) for start in range(0, count, self.window_stride))
+        return out
 
     def _resolve_taskvars(self, taskvars: Sequence[str] | str | None) -> set[str] | None:
         if taskvars is None:

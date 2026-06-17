@@ -78,6 +78,21 @@ profile:
     row_limit: 80
     group_by_input_shape: false
 
+# optional WAM self-rollout diagnostic; disabled by default and never writes official GEMBench preds
+open_loop_wam_eval:
+  enabled: false
+  every: 2000
+  num_samples: 1
+  rollout_chunks: 4
+  chunk_stride: 32
+  num_inference_steps: ${eval_num_inference_steps}
+  seed: 42
+  save_video: true
+  video_fps: 8
+  max_wandb_videos: 1
+  fail_on_error: false
+  tiled: false
+
 # wandb
 wandb:
   enabled: false

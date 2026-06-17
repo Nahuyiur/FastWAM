@@ -9,6 +9,7 @@ from math import ceil
 from pathlib import Path
 import time
 from contextlib import nullcontext
+from typing import Any
 
 import numpy as np
 import torch
@@ -24,6 +25,7 @@ from .utils.pytorch_utils import set_global_seed
 from .utils.samplers import ResumableEpochSampler
 from .utils.video_io import save_mp4
 from .utils.video_metrics import pil_frames_to_video_tensor, video_psnr, video_ssim
+from .evaluation.open_loop_wam import run_autoregressive_open_loop_wam_eval
 
 logger = get_logger(__name__)
 
@@ -78,6 +80,7 @@ class Wan22Trainer:
         self.profile_torch_cfg = profile_cfg.get("torch_profiler", {}) or {}
         self._profile_step_t0 = None
         self._profile_accum = {}
+        self.open_loop_wam_eval_cfg = cfg.get("open_loop_wam_eval", {}) or {}
 
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.gradient_accumulation_steps,
@@ -139,6 +142,7 @@ class Wan22Trainer:
         self.weights_dir = os.path.join(self.checkpoint_root, "weights")
         self.state_dir = os.path.join(self.checkpoint_root, "state")
         self.eval_dir = os.path.join(self.output_dir, "eval")
+        self.open_loop_wam_eval_dir = os.path.join(self.output_dir, "eval_open_loop")
 
         ensure_dir(self.output_dir)
         ensure_dir(self.checkpoint_root)
@@ -1023,6 +1027,101 @@ class Wan22Trainer:
             result["action_l1"] = float(action_l1_mean)
         return result
 
+    def _should_run_open_loop_wam_eval(self) -> bool:
+        cfg = self.open_loop_wam_eval_cfg
+        enabled = bool(cfg.get("enabled", False))
+        every = int(cfg.get("every", 0))
+        return (
+            enabled
+            and every > 0
+            and self.val_dataset is not None
+            and self.global_step > 0
+            and self.global_step % every == 0
+        )
+
+    def _run_open_loop_wam_eval_if_due(self):
+        if not self._should_run_open_loop_wam_eval():
+            return None
+
+        metrics = None
+        error_to_raise = None
+        if self.accelerator.is_main_process:
+            cfg = self.open_loop_wam_eval_cfg
+            model = self.accelerator.unwrap_model(self.model)
+            was_dit_training = model.dit.training
+            try:
+                model.eval()
+                with self.accelerator.autocast():
+                    metrics = run_autoregressive_open_loop_wam_eval(
+                        model=model,
+                        dataset=self.val_dataset,
+                        output_dir=self.open_loop_wam_eval_dir,
+                        global_step=self.global_step,
+                        num_samples=int(cfg.get("num_samples", 1)),
+                        rollout_chunks=int(cfg.get("rollout_chunks", 4)),
+                        chunk_stride=int(cfg.get("chunk_stride", 32)),
+                        num_inference_steps=int(cfg.get("num_inference_steps", self.eval_num_inference_steps)),
+                        seed=int(cfg.get("seed", self.seed)),
+                        save_video=bool(cfg.get("save_video", True)),
+                        video_fps=int(cfg.get("video_fps", 8)),
+                        tiled=bool(cfg.get("tiled", False)),
+                    )
+            except Exception as exc:
+                logger.exception("[wam_open_loop] step=%d failed: %s", self.global_step, exc)
+                error_to_raise = exc
+                metrics = {
+                    "error": 1.0,
+                    "error_message": str(exc),
+                }
+            finally:
+                if was_dit_training:
+                    self._set_dit_only_train_mode()
+
+        self.accelerator.wait_for_everyone()
+        if (
+            self.accelerator.is_main_process
+            and error_to_raise is not None
+            and bool(self.open_loop_wam_eval_cfg.get("fail_on_error", False))
+        ):
+            raise error_to_raise
+        return metrics
+
+    def _log_open_loop_wam_eval(self, metrics: dict[str, Any]) -> None:
+        if not self.accelerator.is_main_process:
+            return
+        payload = {
+            "wam_open_loop/error": float(metrics.get("error", 0.0)),
+        }
+        for key in ("num_samples", "rollout_chunks", "frames", "psnr_gt_mean", "ssim_gt_mean"):
+            if key in metrics:
+                payload[f"wam_open_loop/{key}"] = float(metrics[key])
+
+        video_paths = list(metrics.get("video_paths", []) or [])
+        if video_paths and self.wandb_run is not None:
+            try:
+                import wandb
+
+                max_videos = int(self.open_loop_wam_eval_cfg.get("max_wandb_videos", 1))
+                video_fps = int(self.open_loop_wam_eval_cfg.get("video_fps", 8))
+                for video_idx, video_path in enumerate(video_paths[:max(0, max_videos)]):
+                    payload[f"wam_open_loop/video_{video_idx}"] = wandb.Video(video_path, fps=video_fps, format="mp4")
+            except ImportError:
+                logger.warning("wandb is not installed; skipping WAM open-loop video upload.")
+        self._wandb_log(payload)
+
+        if float(metrics.get("error", 0.0)) > 0:
+            logger.warning("[wam_open_loop] step=%d error=%s", self.global_step, metrics.get("error_message", "unknown"))
+        else:
+            logger.info(
+                "[wam_open_loop] step=%d samples=%d frames=%d psnr_gt=%.4f ssim_gt=%.4f summary=%s",
+                self.global_step,
+                int(metrics.get("num_samples", 0)),
+                int(metrics.get("frames", 0)),
+                float(metrics.get("psnr_gt_mean", 0.0)),
+                float(metrics.get("ssim_gt_mean", 0.0)),
+                metrics.get("summary_path", ""),
+            )
+
     def _save_weights_checkpoint(self, step_tag: str):
         model = self.accelerator.unwrap_model(self.model)
         ckpt_path = os.path.join(self.weights_dir, f"{step_tag}.pt")
@@ -1416,6 +1515,10 @@ class Wan22Trainer:
                                 if "action_l1" in metrics:
                                     eval_payload["eval/action_l1"] = float(metrics["action_l1"])
                                 self._wandb_log(eval_payload)
+
+                        open_loop_metrics = self._run_open_loop_wam_eval_if_due()
+                        if open_loop_metrics is not None:
+                            self._log_open_loop_wam_eval(open_loop_metrics)
 
                         if self.save_every > 0 and self.global_step % self.save_every == 0:
                             ckpt_info = self.save_checkpoint()
