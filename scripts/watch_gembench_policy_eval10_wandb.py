@@ -70,9 +70,16 @@ def _infer_run_id(value: str | None, run_dir: Path, run_name: str | None) -> str
 def _metric_prefix(args: argparse.Namespace) -> str:
     if args.wandb_metric_prefix:
         return str(args.wandb_metric_prefix).strip().strip("/") or "eval10_periodic"
-    if str(args.eval_protocol) == "fastwam_chunk_replan":
-        return "fastwam_chunk_replan_eval10"
+    if _normalize_eval_protocol(args.eval_protocol) == "chunk_replan":
+        return "chunk_replan_eval10"
     return "eval10_periodic"
+
+
+def _normalize_eval_protocol(value: str) -> str:
+    protocol = str(value)
+    if protocol in {"chunk_replan", "fastwam_chunk_replan", "trace_chunk_replan"}:
+        return "chunk_replan"
+    return protocol
 
 
 def _prepend_env_path(env: dict[str, str], key: str, values: list[str]) -> None:
@@ -281,7 +288,7 @@ def _run_eval10(args: argparse.Namespace, *, step: int, checkpoint: Path) -> tup
         "--relation-mode",
         args.relation_mode,
         "--eval-protocol",
-        args.eval_protocol,
+        _normalize_eval_protocol(args.eval_protocol),
         "--chunk-replan-steps",
         str(args.chunk_replan_steps),
         "--device",
@@ -353,8 +360,9 @@ def _wandb_init(args: argparse.Namespace):
 
     metric_prefix = _metric_prefix(args)
     tags = ["gembench", "policy", "eval10-visual", args.wandb_mode]
-    if str(args.eval_protocol) == "fastwam_chunk_replan":
-        tags.extend(["fastwam-chunk-replan", "not-official-score"])
+    eval_protocol = _normalize_eval_protocol(args.eval_protocol)
+    if eval_protocol == "chunk_replan":
+        tags.extend(["chunk-replan", "not-official-score"])
     init_kwargs = {
         "entity": args.wandb_entity or None,
         "project": args.wandb_project,
@@ -363,8 +371,8 @@ def _wandb_init(args: argparse.Namespace):
         "resume": "allow" if run_id else None,
         "group": args.wandb_group or None,
         "job_type": (
-            "eval10-fastwam-chunk-replan-visual"
-            if args.wandb_mode == "sidecar" and str(args.eval_protocol) == "fastwam_chunk_replan"
+            "eval10-chunk-replan-visual"
+            if args.wandb_mode == "sidecar" and eval_protocol == "chunk_replan"
             else "eval10-visual"
             if args.wandb_mode == "sidecar"
             else "train"
@@ -381,7 +389,7 @@ def _wandb_init(args: argparse.Namespace):
             "max_videos": int(args.max_videos),
             "min_video_frames": int(args.min_video_frames),
             "relation_mode": args.relation_mode,
-            "eval_protocol": str(args.eval_protocol),
+            "eval_protocol": eval_protocol,
             "chunk_replan_steps": int(args.chunk_replan_steps),
             "chunk_predict_video": bool(args.chunk_predict_video),
             "wandb_metric_prefix": metric_prefix,
@@ -530,8 +538,8 @@ def main() -> int:
     parser.add_argument("--relation-mode", choices=["auto", "none", "noop_smoke", "online_current"], default="auto")
     parser.add_argument(
         "--eval-protocol",
-        choices=["official_one_step", "fastwam_chunk_replan"],
-        default="official_one_step",
+        choices=["official_one_step", "chunk_replan", "fastwam_chunk_replan", "trace_chunk_replan"],
+        default="chunk_replan",
     )
     parser.add_argument("--chunk-replan-steps", type=int, default=1)
     parser.add_argument("--chunk-predict-video", action="store_true")
@@ -581,7 +589,7 @@ def main() -> int:
             state["run_dir"] = str(run_dir)
             state["output_root"] = str(Path(args.output_root).resolve())
             state["interval_steps"] = int(args.interval_steps)
-            state["eval_protocol"] = str(args.eval_protocol)
+            state["eval_protocol"] = _normalize_eval_protocol(args.eval_protocol)
             state["chunk_replan_steps"] = int(args.chunk_replan_steps)
             state["chunk_predict_video"] = bool(args.chunk_predict_video)
             _write_json(state_path, state)

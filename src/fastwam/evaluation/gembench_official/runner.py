@@ -380,13 +380,15 @@ class GEMBenchOfficialRunner:
         self.initial_success_policy = str(initial_success_policy)
         if bool(write_official_preds) and str(actioner.relation_mode) == "noop_smoke":
             raise ValueError("noop_smoke relation mode may not write official preds/results.jsonl.")
-        if eval_protocol not in {"official_one_step", "fastwam_chunk_replan"}:
+        if eval_protocol in {"fastwam_chunk_replan", "trace_chunk_replan"}:
+            eval_protocol = "chunk_replan"
+        if eval_protocol not in {"official_one_step", "chunk_replan"}:
             raise ValueError(f"Unsupported eval_protocol={eval_protocol!r}")
         if eval_protocol != "official_one_step" and bool(write_official_preds):
             raise ValueError("Non-official eval protocols must use write_official_preds=false.")
         self.write_official_preds = bool(write_official_preds)
         self.eval_protocol = str(eval_protocol)
-        self.chunk_replan_steps = max(int(chunk_replan_steps), 1)
+        self.chunk_replan_steps = 1 if self.eval_protocol == "official_one_step" else max(int(chunk_replan_steps), 1)
         self.chunk_predict_video = bool(chunk_predict_video)
 
     def dry_run_payload(self, *, trials: list[TrialSpec], skipped_taskvars: list[str] | None = None) -> dict[str, Any]:
@@ -424,6 +426,14 @@ class GEMBenchOfficialRunner:
             "eval_protocol": self.eval_protocol,
             "chunk_replan_steps": self.chunk_replan_steps,
             "chunk_predict_video": self.chunk_predict_video,
+            "chunk_replan_contract": {
+                "predicts_action_chunk": True,
+                "executes_first_k_actions": int(self.chunk_replan_steps),
+                "reward_check_each_action": True,
+                "stop_on_success": True,
+                "reobserve_after_k_actions": self.eval_protocol == "chunk_replan",
+                "official_style_equivalent": self.eval_protocol == "chunk_replan" and int(self.chunk_replan_steps) == 1,
+            },
             "camera_names": [OFFICIAL_CAMERA_NAMES[idx] for idx in self.cam_ids],
             "trials": [asdict(trial) for trial in trials],
             "skipped_taskvars": skipped_taskvars or [],
@@ -454,6 +464,17 @@ class GEMBenchOfficialRunner:
         raw_successes = [row for row in trial_rows if row["success"]]
         visual_valid_rows = [row for row in trial_rows if row.get("visual_rollout_valid", False)]
         visual_too_short_rows = [row for row in trial_rows if row.get("video_too_short", False)]
+        chunk_records = [
+            record
+            for row in trial_rows
+            for record in row.get("chunk_replan_records", [])
+            if isinstance(record, dict)
+        ]
+        chunk_replan_steps_used = sorted({int(record.get("replan_steps", 0)) for record in chunk_records})
+        chunk_replan_horizons = [int(record.get("chunk_horizon", 0)) for record in chunk_records]
+        chunk_replan_executed_actions = sum(
+            len(record.get("selected_chunk_indices") or []) for record in chunk_records
+        )
         summary = {
             "evidence_type": "gembench_official_success_rate",
             "status": "completed",
@@ -490,14 +511,26 @@ class GEMBenchOfficialRunner:
             "eval_protocol": self.eval_protocol,
             "chunk_replan_steps": self.chunk_replan_steps,
             "chunk_predict_video": self.chunk_predict_video,
+            "chunk_replan_contract": {
+                "predicts_action_chunk": True,
+                "executes_first_k_actions": int(self.chunk_replan_steps),
+                "reward_check_each_action": True,
+                "stop_on_success": True,
+                "reobserve_after_k_actions": self.eval_protocol == "chunk_replan",
+                "official_style_equivalent": self.eval_protocol == "chunk_replan" and int(self.chunk_replan_steps) == 1,
+            },
+            "chunk_replan_total_replans": int(len(chunk_records)),
+            "chunk_replan_total_executed_actions": int(chunk_replan_executed_actions),
+            "chunk_replan_steps_used": chunk_replan_steps_used,
+            "chunk_replan_max_chunk_horizon": int(max(chunk_replan_horizons) if chunk_replan_horizons else 0),
             "official_score_candidate": bool(
                 self.eval_protocol == "official_one_step"
                 and self.write_official_preds
                 and self.actioner.relation_mode != "noop_smoke"
             ),
             "success_rate_scope": (
-                "fastwam_chunk_replan_visual_diagnostic_not_official_score"
-                if self.eval_protocol == "fastwam_chunk_replan"
+                "chunk_replan_visual_diagnostic_not_official_score"
+                if self.eval_protocol == "chunk_replan"
                 else
                 "eval10_model_diagnostic_excludes_initial_success"
                 if self.initial_success_policy == "mark_invalid"
@@ -1140,6 +1173,8 @@ class GEMBenchOfficialRunner:
             "write_official_preds": bool(self.write_official_preds),
             "chunk_replan_steps": int(self.chunk_replan_steps),
             "chunk_predict_video": bool(self.chunk_predict_video),
+            "reward_check_each_action": True,
+            "stop_on_success": True,
             "chunk_replan_records": chunk_replan_records,
             "predicted_full_video_paths": predicted_full_video_paths,
             "predicted_prefix_video_paths": predicted_prefix_video_paths,

@@ -24,12 +24,12 @@ max_steps: 25
 max_tries: 10
 initial_success_policy: mark_invalid
 
-eval_protocol: fastwam_chunk_replan
+eval_protocol: chunk_replan
 chunk_replan_steps: 8
 chunk_predict_video: true
 official_full_score: false
 write_official_preds: false
-success_rate_scope: fastwam_chunk_replan_visual_diagnostic_not_official_score
+success_rate_scope: chunk_replan_visual_diagnostic_not_official_score
 
 record_video: true
 video_mode: official_recorder

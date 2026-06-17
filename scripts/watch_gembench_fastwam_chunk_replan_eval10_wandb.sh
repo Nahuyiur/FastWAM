@@ -21,12 +21,12 @@ CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 export CUDA_VISIBLE_DEVICES
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
-export WANDB_PROJECT="${WANDB_PROJECT:-fastwam-gembench}"
-export WANDB_GROUP="${WANDB_GROUP:-gembench-wam-9v32-fastwam-chunk-replan-eval10-watchdog}"
+export WANDB_PROJECT="${WANDB_PROJECT:-fastwam-gembench-9v32}"
+export WANDB_GROUP="${WANDB_GROUP:-gembench-wam-9v32-chunk-replan-eval10-watchdog}"
 
 python scripts/watch_gembench_policy_eval10_wandb.py \
   --run-dir "${RUN_DIR}" \
-  --model-name fastwam_chunk_replan \
+  --model-name fastwam \
   --run-id "${RUN_ID}" \
   --eval10-config configs/eval/gembench_official_eval10_fastwam_chunk_replan_seed200.yaml \
   --interval-steps "${INTERVAL_STEPS}" \
@@ -35,11 +35,11 @@ python scripts/watch_gembench_policy_eval10_wandb.py \
   --max-videos "${MAX_VIDEOS:-10}" \
   --min-video-frames "${MIN_VIDEO_FRAMES:-60}" \
   --relation-mode none \
-  --eval-protocol fastwam_chunk_replan \
+  --eval-protocol chunk_replan \
   --chunk-replan-steps "${CHUNK_REPLAN_STEPS}" \
   --chunk-predict-video \
   --device "${DEVICE:-cuda:0}" \
   --cuda-visible-devices "${CUDA_VISIBLE_DEVICES}" \
-  --wandb-metric-prefix fastwam_chunk_replan_eval10 \
-  --output-root "${OUTPUT_ROOT:-/mnt/yuhan/gembench_watchdog_eval10/fastwam_chunk_replan/${RUN_ID}}" \
+  --wandb-metric-prefix chunk_replan_eval10 \
+  --output-root "${OUTPUT_ROOT:-/mnt/yuhan/gembench_watchdog_eval10/fastwam/${RUN_ID}}" \
   "$@"

@@ -33,3 +33,8 @@ video_recorder_required: true
 video_initial_snap: true
 min_video_frames: 60
 write_official_preds: false
+eval_protocol: chunk_replan
+chunk_replan_steps: 8
+chunk_predict_video: true
+official_full_score: false
+success_rate_scope: chunk_replan_visual_diagnostic_not_official_score

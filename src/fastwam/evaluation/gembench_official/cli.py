@@ -27,6 +27,7 @@ from .common import (
 
 
 DEFAULT_EVAL10_CONFIG = PROJECT_ROOT / "configs" / "eval" / "gembench_official_eval10_compositional_oa_seed200.yaml"
+CHUNK_REPLAN_PROTOCOL_ALIASES = {"chunk_replan", "fastwam_chunk_replan", "trace_chunk_replan"}
 
 
 def _timestamp() -> str:
@@ -48,6 +49,13 @@ def _parse_pair(value: str) -> tuple[int, int]:
     if len(parts) != 2:
         raise argparse.ArgumentTypeError(f"Expected two comma-separated integers, got {value!r}")
     return int(parts[0]), int(parts[1])
+
+
+def _normalize_eval_protocol(value: Any) -> str:
+    protocol = str(value)
+    if protocol in CHUNK_REPLAN_PROTOCOL_ALIASES:
+        return "chunk_replan"
+    return protocol
 
 
 def _load_yaml_config(path: Path) -> dict[str, Any]:
@@ -280,7 +288,7 @@ def _official_scope_payload(args: argparse.Namespace, *, eval10: bool) -> dict[s
     test_splits = _parse_csv(args.taskvar_splits) or ["train", "test_l2", "test_l3", "test_l4"]
     val_seed = int(args.seed if args.seed is not None else 100)
     contract_payload = _official_contract_payload(args, eval10=eval10)
-    eval_protocol = str(getattr(args, "eval_protocol", "official_one_step"))
+    eval_protocol = _normalize_eval_protocol(getattr(args, "eval_protocol", "official_one_step"))
     official_full = (
         not eval10
         and eval_protocol == "official_one_step"
@@ -302,8 +310,8 @@ def _official_scope_payload(args: argparse.Namespace, *, eval10: bool) -> dict[s
         and args.limit_taskvars is None
         and not _parse_csv(args.taskvars)
     )
-    if eval_protocol == "fastwam_chunk_replan":
-        scope = "fastwam_chunk_replan_visual_diagnostic_not_official_score"
+    if eval_protocol == "chunk_replan":
+        scope = "chunk_replan_visual_diagnostic_not_official_score"
     elif eval10:
         scope = "eval10_visual_diagnostic_not_official_score"
     elif official_full and not contract_payload["official_contract_ok"]:
@@ -791,9 +799,12 @@ def build_parser(*, eval10: bool) -> argparse.ArgumentParser:
     parser.add_argument("--relation-mode", choices=["auto", "none", "noop_smoke", "online_current"], default="auto")
     parser.add_argument(
         "--eval-protocol",
-        choices=["official_one_step", "fastwam_chunk_replan"],
+        choices=["official_one_step", "chunk_replan", "fastwam_chunk_replan", "trace_chunk_replan"],
         default="official_one_step",
-        help="official_one_step preserves the GEMBench one-action-per-observation contract; fastwam_chunk_replan is a visual diagnostic.",
+        help=(
+            "official_one_step preserves the GEMBench one-action-per-observation contract; "
+            "chunk_replan executes the first K actions from each predicted chunk as a visual diagnostic."
+        ),
     )
     parser.add_argument("--chunk-replan-steps", type=int, default=1)
     parser.add_argument("--chunk-predict-video", action="store_true", default=False)
@@ -833,6 +844,7 @@ def run_cli(*, eval10: bool) -> int:
     args = build_parser(eval10=eval10).parse_args()
     if eval10:
         _apply_eval10_config(args)
+    args.eval_protocol = _normalize_eval_protocol(args.eval_protocol)
     if eval10 and bool(args.write_official_preds):
         raise ValueError(
             "eval10 is a visual diagnostic and may not write official preds. "
@@ -848,8 +860,6 @@ def run_cli(*, eval10: bool) -> int:
             f"--eval-protocol {args.eval_protocol} is a diagnostic protocol and may not write official preds. "
             "Use --no-write-official-preds."
         )
-    if str(args.eval_protocol) == "fastwam_chunk_replan" and not bool(args.chunk_predict_video):
-        args.chunk_predict_video = True
     run_dir = Path(args.run_dir).expanduser().resolve()
     _, stats_path = _load_cfg_and_stats(run_dir)
     checkpoint = resolve_checkpoint(run_dir, args.checkpoint, dry_run=args.dry_run)
