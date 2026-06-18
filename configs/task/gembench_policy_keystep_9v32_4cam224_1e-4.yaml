@@ -33,6 +33,9 @@ log_every: 10
 save_every: 2000
 eval_every: 2000
 eval_num_inference_steps: 10
+policy_action_eval:
+  enabled: true
+  save_json: true
 
 mixed_precision: bf16
 gradient_accumulation_steps: 1

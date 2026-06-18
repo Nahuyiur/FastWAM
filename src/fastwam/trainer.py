@@ -30,6 +30,16 @@ from .evaluation.open_loop_wam import run_autoregressive_open_loop_wam_eval
 logger = get_logger(__name__)
 
 
+def _json_scalar(value):
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return value.detach().cpu().item()
+        return value.detach().cpu().tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 class Wan22Trainer:
     def __init__(self, model, train_dataset, val_dataset=None, *, cfg: DictConfig):
         self.model = model
@@ -81,6 +91,7 @@ class Wan22Trainer:
         self._profile_step_t0 = None
         self._profile_accum = {}
         self.open_loop_wam_eval_cfg = cfg.get("open_loop_wam_eval", {}) or {}
+        self.policy_action_eval_cfg = cfg.get("policy_action_eval", {}) or {}
 
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.gradient_accumulation_steps,
@@ -765,6 +776,19 @@ class Wan22Trainer:
         proprio = sample.get("proprio", None)
         context = sample.get("context", None)
         context_mask = sample.get("context_mask", None)
+        metadata_fields = (
+            "taskvar",
+            "episode_key",
+            "window_start",
+            "policy_action_raw",
+            "policy_current_key_idx",
+            "policy_next_key_idx",
+            "policy_key_position",
+            "policy_target_type",
+            "policy_action_horizon",
+            "wam_aux_action_horizon",
+        )
+        metadata = {key: sample[key] for key in metadata_fields if key in sample}
 
         if not isinstance(video, torch.Tensor):
             raise TypeError(
@@ -854,6 +878,7 @@ class Wan22Trainer:
             "context": context,
             "context_mask": context_mask,
             "action_horizon": action_horizon,
+            "metadata": metadata,
         }
 
     @torch.no_grad()
@@ -921,19 +946,20 @@ class Wan22Trainer:
         psnr_rollout_vs_gt = video_psnr(pred=pred_video_tensor, target=gt_video_tensor)
         ssim_rollout_vs_gt = video_ssim(pred=pred_video_tensor, target=gt_video_tensor)
 
-        action_l1 = None
-        action_l2 = None
+        action_metrics = {}
+        action_diagnostic_payload = None
         metric_action = sample["policy_action"][0] if sample.get("policy_action") is not None else action
-        if metric_action is not None and pred_action is not None:
+        if bool(self.policy_action_eval_cfg.get("enabled", True)) and metric_action is not None and pred_action is not None:
             if sample["proprio"] is None:
                 raise ValueError("Eval sample must contain `proprio` for action denormalization.")
-            proprio = sample["proprio"].detach().to(device="cpu", dtype=torch.float32)
+            proprio_full = sample["proprio"].detach().to(device="cpu", dtype=torch.float32)
 
             processor = self.val_dataset.lerobot_dataset.processor
 
             denorm_actions = {}
             action_meta = processor.shape_meta["action"]
             state_meta = processor.shape_meta["state"]
+            normalized_actions = {}
             for action_name, raw_action in (("pred", pred_action), ("gt", metric_action)):
                 if not isinstance(raw_action, torch.Tensor):
                     raise TypeError(f"{action_name} action must be a torch.Tensor, got {type(raw_action)}")
@@ -946,7 +972,14 @@ class Wan22Trainer:
                         f"{action_name} action must have shape [T, D] or [1, T, D], got {tuple(raw_action.shape)}"
                     )
                 action_btd = action_btd.detach().to(device="cpu", dtype=torch.float32)
+                normalized_actions[action_name] = action_btd
 
+                proprio = proprio_full[:, : action_btd.shape[1]]
+                if proprio.shape[1] != action_btd.shape[1]:
+                    raise ValueError(
+                        f"Eval proprio/action horizon mismatch for {action_name}: "
+                        f"proprio={tuple(proprio.shape)} action={tuple(action_btd.shape)}"
+                    )
                 batch = {
                     "action": action_btd,
                     "state": proprio,
@@ -962,8 +995,17 @@ class Wan22Trainer:
                 if denorm_action.ndim != 3 or denorm_action.shape[0] != 1:
                     raise ValueError(
                         f"Denormalized {action_name} action must have shape [1, T, D], got {tuple(denorm_action.shape)}"
-                    )
+                )
                 denorm_actions[action_name] = denorm_action
+
+            pred_action_norm = normalized_actions["pred"]
+            gt_action_norm = normalized_actions["gt"]
+            if pred_action_norm.shape != gt_action_norm.shape:
+                raise ValueError(
+                    "Predicted action/GT action shape mismatch before denormalization: "
+                    f"pred={tuple(pred_action_norm.shape)} vs gt={tuple(gt_action_norm.shape)}"
+                )
+            norm_diff = pred_action_norm - gt_action_norm
 
             pred_action_denorm = denorm_actions["pred"]
             gt_action_denorm = denorm_actions["gt"]
@@ -974,8 +1016,79 @@ class Wan22Trainer:
                     f"pred={tuple(pred_action_denorm.shape)} vs gt={tuple(gt_action_denorm.shape)}"
                 )
             action_diff = pred_action_denorm - gt_action_denorm
-            action_l1 = action_diff.abs().mean().item()
-            action_l2 = action_diff.pow(2).mean().item()
+            action_abs = action_diff.abs()
+            action_sq = action_diff.pow(2)
+            norm_abs = norm_diff.abs()
+            norm_sq = norm_diff.pow(2)
+
+            def _metric_slice(values: torch.Tensor, start: int, end: int) -> torch.Tensor:
+                return values[..., start:end] if values.shape[-1] >= end else values[..., 0:0]
+
+            action_metrics = {
+                "action_l1": float(action_abs.mean().item()),
+                "action_l2": float(action_sq.mean().item()),
+                "policy_action_denorm_mae": float(action_abs.mean().item()),
+                "policy_action_denorm_mse": float(action_sq.mean().item()),
+                "policy_action_denorm_rmse": float(torch.sqrt(action_sq.mean()).item()),
+                "policy_action_denorm_max_abs": float(action_abs.max().item()),
+                "policy_action_denorm_l2_norm": float(torch.linalg.vector_norm(action_diff).item()),
+                "policy_action_norm_mae": float(norm_abs.mean().item()),
+                "policy_action_norm_mse": float(norm_sq.mean().item()),
+                "policy_action_norm_rmse": float(torch.sqrt(norm_sq.mean()).item()),
+                "policy_action_norm_max_abs": float(norm_abs.max().item()),
+            }
+            if action_diff.shape[-1] >= 3:
+                xyz_abs = _metric_slice(action_abs, 0, 3)
+                xyz_sq = _metric_slice(action_sq, 0, 3)
+                action_metrics["policy_action_xyz_mae"] = float(xyz_abs.mean().item())
+                action_metrics["policy_action_xyz_rmse"] = float(torch.sqrt(xyz_sq.mean()).item())
+            if action_diff.shape[-1] >= 7:
+                quat_abs = _metric_slice(action_abs, 3, 7)
+                quat_sq = _metric_slice(action_sq, 3, 7)
+                action_metrics["policy_action_quat_mae"] = float(quat_abs.mean().item())
+                action_metrics["policy_action_quat_rmse"] = float(torch.sqrt(quat_sq.mean()).item())
+            if action_diff.shape[-1] >= 8:
+                gripper_abs = _metric_slice(action_abs, 7, 8)
+                gripper_sq = _metric_slice(action_sq, 7, 8)
+                action_metrics["policy_action_gripper_mae"] = float(gripper_abs.mean().item())
+                action_metrics["policy_action_gripper_rmse"] = float(torch.sqrt(gripper_sq.mean()).item())
+
+            metadata = sample.get("metadata", {}) or {}
+            policy_action_raw = metadata.get("policy_action_raw", None)
+            if isinstance(policy_action_raw, torch.Tensor):
+                policy_action_raw_payload = policy_action_raw.detach().cpu().float().tolist()
+            else:
+                policy_action_raw_payload = policy_action_raw
+            action_diagnostic_payload = {
+                "global_step": int(self.global_step),
+                "rank": int(self.accelerator.process_index),
+                "eval_index": int(eval_index),
+                "taskvar": metadata.get("taskvar"),
+                "episode_key": metadata.get("episode_key"),
+                "window_start": _json_scalar(metadata.get("window_start")),
+                "policy_current_key_idx": _json_scalar(metadata.get("policy_current_key_idx")),
+                "policy_next_key_idx": _json_scalar(metadata.get("policy_next_key_idx")),
+                "policy_key_position": _json_scalar(metadata.get("policy_key_position")),
+                "policy_target_type": metadata.get("policy_target_type"),
+                "policy_action_raw": policy_action_raw_payload,
+                "pred_action_normalized": pred_action_norm.squeeze(0).tolist(),
+                "target_action_normalized": gt_action_norm.squeeze(0).tolist(),
+                "diff_action_normalized": norm_diff.squeeze(0).tolist(),
+                "pred_action_denormalized": pred_action_denorm.squeeze(0).tolist(),
+                "target_action_denormalized": gt_action_denorm.squeeze(0).tolist(),
+                "diff_action_denormalized": action_diff.squeeze(0).tolist(),
+                "metrics": action_metrics,
+            }
+            if bool(self.policy_action_eval_cfg.get("save_json", True)):
+                diagnostic_dir = os.path.join(self.eval_dir, "policy_action_diagnostics")
+                ensure_dir(diagnostic_dir)
+                diagnostic_path = os.path.join(
+                    diagnostic_dir,
+                    f"step_{self.global_step:06d}_rank_{self.accelerator.process_index:03d}_policy_action_diff.json",
+                )
+                with open(diagnostic_path, "w") as f:
+                    json.dump(action_diagnostic_payload, f, ensure_ascii=True, indent=2, sort_keys=True)
+                action_metrics["policy_action_diagnostic_json"] = diagnostic_path
 
         # 4. VAE reconstruction metrics against GT video
         gt_video_batch = video0.unsqueeze(0).to(device=model.device, dtype=model.torch_dtype)
@@ -1009,6 +1122,26 @@ class Wan22Trainer:
         )
         save_mp4(stitched_frames, video_path, fps=8)
 
+        numeric_action_metric_names = [
+            "action_l2",
+            "action_l1",
+            "policy_action_denorm_mae",
+            "policy_action_denorm_mse",
+            "policy_action_denorm_rmse",
+            "policy_action_denorm_max_abs",
+            "policy_action_denorm_l2_norm",
+            "policy_action_norm_mae",
+            "policy_action_norm_mse",
+            "policy_action_norm_rmse",
+            "policy_action_norm_max_abs",
+            "policy_action_xyz_mae",
+            "policy_action_xyz_rmse",
+            "policy_action_quat_mae",
+            "policy_action_quat_rmse",
+            "policy_action_gripper_mae",
+            "policy_action_gripper_rmse",
+        ]
+        has_action_metrics = bool(action_metrics)
         local_metrics = torch.tensor(
             [
                 float(val_loss),
@@ -1018,16 +1151,17 @@ class Wan22Trainer:
                 float(ssim_rollout_vs_decode),
                 float(psnr_decode_vs_gt),
                 float(ssim_decode_vs_gt),
-                float(action_l2) if action_l2 is not None else -1.0,
-                float(action_l1) if action_l1 is not None else -1.0,
+                *[float(action_metrics.get(key, -1.0)) for key in numeric_action_metric_names],
             ],
             device=self.accelerator.device,
             dtype=torch.float32,
         ).unsqueeze(0)
         gathered_metrics = self.accelerator.gather_for_metrics(local_metrics)
         mean_metrics = gathered_metrics[:, :7].mean(dim=0)
-        action_l2_mean = gathered_metrics[:, 7].mean().item() if action_l2 is not None else None
-        action_l1_mean = gathered_metrics[:, 8].mean().item() if action_l1 is not None else None
+        action_metric_means = {}
+        if has_action_metrics:
+            for metric_idx, metric_name in enumerate(numeric_action_metric_names):
+                action_metric_means[metric_name] = float(gathered_metrics[:, 7 + metric_idx].mean().item())
 
         if was_dit_training:
             self._set_dit_only_train_mode()
@@ -1042,10 +1176,9 @@ class Wan22Trainer:
             "ssim_dg": float(mean_metrics[6].item()),
             "video_path": video_path,
         }
-        if action_l2_mean is not None:
-            result["action_l2"] = float(action_l2_mean)
-        if action_l1_mean is not None:
-            result["action_l1"] = float(action_l1_mean)
+        result.update(action_metric_means)
+        if "policy_action_diagnostic_json" in action_metrics:
+            result["policy_action_diagnostic_json"] = action_metrics["policy_action_diagnostic_json"]
         return result
 
     def _should_run_open_loop_wam_eval(self) -> bool:
@@ -1521,6 +1654,10 @@ class Wan22Trainer:
                                     description += " action_l2=%.4f" % metrics["action_l2"]
                                 if "action_l1" in metrics:
                                     description += " action_l1=%.4f" % metrics["action_l1"]
+                                if "policy_action_denorm_mae" in metrics:
+                                    description += " policy_action_denorm_mae=%.4f" % metrics["policy_action_denorm_mae"]
+                                if "policy_action_denorm_rmse" in metrics:
+                                    description += " policy_action_denorm_rmse=%.4f" % metrics["policy_action_denorm_rmse"]
                                 logger.info(description)
                                 eval_payload = {
                                     "eval/val_loss": float(metrics["val_loss"]),
@@ -1535,6 +1672,9 @@ class Wan22Trainer:
                                     eval_payload["eval/action_l2"] = float(metrics["action_l2"])
                                 if "action_l1" in metrics:
                                     eval_payload["eval/action_l1"] = float(metrics["action_l1"])
+                                for metric_key, metric_value in metrics.items():
+                                    if metric_key.startswith("policy_action_") and isinstance(metric_value, (float, int)):
+                                        eval_payload[f"eval/{metric_key}"] = float(metric_value)
                                 self._wandb_log(eval_payload)
 
                         open_loop_metrics = self._run_open_loop_wam_eval_if_due()
