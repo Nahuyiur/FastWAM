@@ -804,6 +804,25 @@ class Wan22Trainer:
                 raise ValueError(f"`sample['action']` temporal dimension must be divisible by video frames-1={num_video_frames - 1}, got {action.shape[1]}")
             action_horizon = int(action.shape[1])
 
+        policy_action = None
+        if "policy_action" in sample:
+            policy_action = sample["policy_action"]
+            if not isinstance(policy_action, torch.Tensor):
+                raise TypeError(f"`sample['policy_action']` must be a torch.Tensor, got {type(policy_action)}")
+            if policy_action.ndim == 2:
+                policy_action = policy_action.unsqueeze(0)
+            if policy_action.ndim != 3:
+                raise ValueError(
+                    f"`sample['policy_action']` must be 3D [B, T, a_dim], got shape {tuple(policy_action.shape)}"
+                )
+            if policy_action.shape[0] != video.shape[0]:
+                raise ValueError(
+                    f"`sample['policy_action']` batch mismatch: {tuple(policy_action.shape)} vs video batch={video.shape[0]}"
+                )
+            if int(policy_action.shape[1]) != 1:
+                raise ValueError(f"`sample['policy_action']` must be [B,1,D], got {tuple(policy_action.shape)}")
+            action_horizon = int(policy_action.shape[1])
+
         proprio = None
         if "proprio" in sample:
             proprio = sample["proprio"]
@@ -830,6 +849,7 @@ class Wan22Trainer:
             "video": video,
             "prompt": prompt,
             "action": action,
+            "policy_action": policy_action,
             "proprio": proprio,
             "context": context,
             "context_mask": context_mask,
@@ -903,7 +923,8 @@ class Wan22Trainer:
 
         action_l1 = None
         action_l2 = None
-        if action is not None and pred_action is not None:
+        metric_action = sample["policy_action"][0] if sample.get("policy_action") is not None else action
+        if metric_action is not None and pred_action is not None:
             if sample["proprio"] is None:
                 raise ValueError("Eval sample must contain `proprio` for action denormalization.")
             proprio = sample["proprio"].detach().to(device="cpu", dtype=torch.float32)
@@ -913,7 +934,7 @@ class Wan22Trainer:
             denorm_actions = {}
             action_meta = processor.shape_meta["action"]
             state_meta = processor.shape_meta["state"]
-            for action_name, raw_action in (("pred", pred_action), ("gt", action)):
+            for action_name, raw_action in (("pred", pred_action), ("gt", metric_action)):
                 if not isinstance(raw_action, torch.Tensor):
                     raise TypeError(f"{action_name} action must be a torch.Tensor, got {type(raw_action)}")
                 if raw_action.ndim == 2:

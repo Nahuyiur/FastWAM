@@ -154,7 +154,7 @@ def create_fastwam(
         action_infer_shift=float(action_scheduler["infer_shift"]),
         action_num_train_timesteps=int(action_scheduler["num_train_timesteps"]),
         loss_lambda_video=float(loss.get("lambda_video", 1.0)),
-        loss_lambda_action=float(loss.get("lambda_action", 1.0)),
+        loss_lambda_action=float(loss.get("lambda_policy_action", loss.get("lambda_action", 1.0))),
     )
 
 
@@ -239,7 +239,7 @@ def create_fastwam_joint(
         action_infer_shift=float(action_scheduler["infer_shift"]),
         action_num_train_timesteps=int(action_scheduler["num_train_timesteps"]),
         loss_lambda_video=float(loss.get("lambda_video", 1.0)),
-        loss_lambda_action=float(loss.get("lambda_action", 1.0)),
+        loss_lambda_action=float(loss.get("lambda_policy_action", loss.get("lambda_action", 1.0))),
     )
 
 
@@ -326,7 +326,7 @@ def create_fastwam_idm(
         action_infer_shift=float(action_scheduler["infer_shift"]),
         action_num_train_timesteps=int(action_scheduler["num_train_timesteps"]),
         loss_lambda_video=float(loss.get("lambda_video", 1.0)),
-        loss_lambda_action=float(loss.get("lambda_action", 1.0)),
+        loss_lambda_action=float(loss.get("lambda_policy_action", loss.get("lambda_action", 1.0))),
     )
 
 

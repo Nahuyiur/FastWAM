@@ -339,24 +339,56 @@ class FastWAM(torch.nn.Module):
         if "action" not in sample:
             raise ValueError("`sample[action]` is required for FastWAM training.")
 
-        action = sample["action"]
-        if action.ndim != 3:
-            raise ValueError(f"`sample[action]` must be 3D [B, T, a_dim], got shape {tuple(action.shape)}")
-        action_horizon = int(action.shape[1])
-        if action_horizon % (num_frames - 1) != 0:
+        video_action = sample["action"]
+        if video_action.ndim != 3:
+            raise ValueError(f"`sample[action]` must be 3D [B, T, a_dim], got shape {tuple(video_action.shape)}")
+        video_action_horizon = int(video_action.shape[1])
+        if video_action_horizon % (num_frames - 1) != 0:
             raise ValueError(
-                f"`sample[action]` temporal dimension must be divisible by video transitions ({num_frames - 1}), got {action_horizon}"
+                f"`sample[action]` temporal dimension must be divisible by video transitions ({num_frames - 1}), got {video_action_horizon}"
             )
 
-        action_is_pad = sample.get("action_is_pad", None)
+        video_action_is_pad = sample.get("action_is_pad", None)
+        if video_action_is_pad is not None:
+            if video_action_is_pad.ndim != 2:
+                raise ValueError(
+                    f"`sample[action_is_pad]` must be 2D [B, T], got shape {tuple(video_action_is_pad.shape)}"
+                )
+            if video_action_is_pad.shape[0] != batch_size or video_action_is_pad.shape[1] != video_action_horizon:
+                raise ValueError(
+                    "`sample[action_is_pad]` shape mismatch: "
+                    f"got {tuple(video_action_is_pad.shape)} vs expected ({batch_size}, {video_action_horizon})"
+                )
+
+        uses_policy_action = "policy_action" in sample
+        action = sample["policy_action"] if uses_policy_action else video_action
+        action_field_name = "policy_action" if uses_policy_action else "action"
+        if action.ndim != 3:
+            raise ValueError(
+                f"`sample[{action_field_name}]` must be 3D [B, T, a_dim], got shape {tuple(action.shape)}"
+            )
+        if action.shape[0] != batch_size:
+            raise ValueError(
+                f"`sample[{action_field_name}]` batch mismatch: got {tuple(action.shape)} vs batch_size={batch_size}"
+            )
+        if action.shape[2] != video_action.shape[2]:
+            raise ValueError(
+                f"`sample[{action_field_name}]` action dim must match `sample[action]`: "
+                f"{action.shape[2]} vs {video_action.shape[2]}"
+            )
+        if uses_policy_action and int(action.shape[1]) != 1:
+            raise ValueError(f"`sample[policy_action]` must be one executable action [B,1,D], got {tuple(action.shape)}")
+
+        action_horizon = int(action.shape[1])
+        action_is_pad = sample.get("policy_action_is_pad", None) if uses_policy_action else video_action_is_pad
         if action_is_pad is not None:
             if action_is_pad.ndim != 2:
                 raise ValueError(
-                    f"`sample[action_is_pad]` must be 2D [B, T], got shape {tuple(action_is_pad.shape)}"
+                    f"`sample[{action_field_name}_is_pad]` must be 2D [B, T], got shape {tuple(action_is_pad.shape)}"
                 )
             if action_is_pad.shape[0] != batch_size or action_is_pad.shape[1] != action_horizon:
                 raise ValueError(
-                    "`sample[action_is_pad]` shape mismatch: "
+                    f"`sample[{action_field_name}_is_pad]` shape mismatch: "
                     f"got {tuple(action_is_pad.shape)} vs expected ({batch_size}, {action_horizon})"
                 )
 
@@ -405,9 +437,12 @@ class FastWAM(torch.nn.Module):
                 proprio=proprio.to(device=self.device, dtype=self.torch_dtype),
             )
         action = action.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
+        video_action = video_action.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
 
         if action_is_pad is not None:
             action_is_pad = action_is_pad.to(device=self.device, dtype=torch.bool, non_blocking=True)
+        if video_action_is_pad is not None:
+            video_action_is_pad = video_action_is_pad.to(device=self.device, dtype=torch.bool, non_blocking=True)
         if image_is_pad is not None:
             image_is_pad = image_is_pad.to(device=self.device, dtype=torch.bool, non_blocking=True)
 
@@ -418,8 +453,11 @@ class FastWAM(torch.nn.Module):
             "first_frame_latents": first_frame_latents,
             "fuse_vae_embedding_in_latents": fuse_flag,
             "action": action,
+            "video_action": video_action,
             "action_is_pad": action_is_pad,
+            "video_action_is_pad": video_action_is_pad,
             "image_is_pad": image_is_pad,
+            "uses_policy_action": uses_policy_action,
         }
 
     @torch.no_grad()
@@ -492,6 +530,7 @@ class FastWAM(torch.nn.Module):
         context = inputs["context"]
         context_mask = inputs["context_mask"]
         action = inputs["action"]
+        video_action = inputs["video_action"]
         action_is_pad = inputs["action_is_pad"]
         image_is_pad = inputs["image_is_pad"]
 
@@ -521,7 +560,7 @@ class FastWAM(torch.nn.Module):
             timestep=timestep_video,
             context=context,
             context_mask=context_mask,
-            action=action,
+            action=video_action,
             fuse_vae_embedding_in_latents=inputs["fuse_vae_embedding_in_latents"],
         )
 
@@ -605,6 +644,8 @@ class FastWAM(torch.nn.Module):
             "loss_video": self.loss_lambda_video * float(loss_video.detach().item()),
             "loss_action": self.loss_lambda_action * float(loss_action.detach().item()),
         }
+        if inputs["uses_policy_action"]:
+            loss_dict["loss_policy_action"] = self.loss_lambda_action * float(loss_action.detach().item())
         return loss_total, loss_dict
 
     @torch.no_grad()
@@ -819,10 +860,10 @@ class FastWAM(torch.nn.Module):
         if action is not None:
             if action.ndim == 2:
                 action = action.unsqueeze(0)
-            if action.ndim != 3 or action.shape[0] != 1 or action.shape[1] != action_horizon:
-                # NOTE: This enforces action condition to have the same shape as action horizon to predict, which may be unnecessary
+            if action.ndim != 3 or action.shape[0] != 1 or action.shape[-1] != self.action_expert.action_dim:
                 raise ValueError(
-                    f"`action` must have shape [1, T, a_dim] or [T, a_dim], got {tuple(action.shape)} with action_horizon={action_horizon}"
+                    "`action` must be video-conditioning actions with shape [1, T, a_dim] or [T, a_dim], "
+                    f"got {tuple(action.shape)} with action_horizon={action_horizon}"
                 )
             action = action.to(device=self.device, dtype=self.torch_dtype)
         if proprio is not None:

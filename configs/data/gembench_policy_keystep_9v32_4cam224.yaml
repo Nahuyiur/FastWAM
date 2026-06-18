@@ -1,0 +1,61 @@
+train:
+  _target_: fastwam.datasets.gembench.microsteps_9v32.GEMBenchKeyStepPolicy9V32Dataset
+  manifest_path: ${oc.env:GEMBENCH_9V32_4CAM_MANIFEST,/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_4cam224_manifest.json}
+  rgb_cache_dir: ${oc.env:GEMBENCH_9V32_4CAM_RGB_CACHE_DIR,/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_4cam224_rgb}
+  keysteps_dir: ${oc.env:GEMBENCH_KEYSTEPS_BBOX_DIR,/mnt/yuhan/datasets/GEMBench/train_dataset/keysteps_bbox/seed0}
+  split: train
+  seed: seed0
+  frame_offsets: [0, 4, 8, 12, 16, 20, 24, 28, 32]
+  action_horizon: 32
+  video_size: [224, 896]
+  camera_order: [left_shoulder, right_shoulder, wrist, front]
+  cache_camera_order: [left_shoulder, right_shoulder, wrist, front]
+  window_stride: 1
+  max_windows_per_demo: null
+  taskvars: null
+  vae_latent_cache_dir: ${oc.env:GEMBENCH_9V32_4CAM_VAE_CACHE_DIR,null}
+  text_embedding_cache_dir: ./data/text_embeds_cache/gembench_microsteps_9v32
+  context_len: 128
+  cache_text_embeddings: true
+  cache_gripper_arrays: true
+  allow_missing_text_embeds: false
+  pretrained_norm_stats: ./data/gembench_microsteps_9v32_dataset_stats.json
+  norm_default_mode: "-2.0/2.0"
+  stats_scan_limit: 0
+  allow_partial_cache: false
+  policy_include_final_key: false
+  policy_min_key_delta: 1
+  processor:
+    action_output_dim: 8
+    proprio_output_dim: 8
+
+val:
+  _target_: fastwam.datasets.gembench.microsteps_9v32.GEMBenchKeyStepPolicy9V32Dataset
+  manifest_path: ${oc.env:GEMBENCH_9V32_4CAM_MANIFEST,/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_4cam224_manifest.json}
+  rgb_cache_dir: ${oc.env:GEMBENCH_9V32_4CAM_RGB_CACHE_DIR,/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_4cam224_rgb}
+  keysteps_dir: ${oc.env:GEMBENCH_KEYSTEPS_BBOX_DIR,/mnt/yuhan/datasets/GEMBench/train_dataset/keysteps_bbox/seed0}
+  split: train
+  seed: seed0
+  frame_offsets: [0, 4, 8, 12, 16, 20, 24, 28, 32]
+  action_horizon: 32
+  video_size: [224, 896]
+  camera_order: [left_shoulder, right_shoulder, wrist, front]
+  cache_camera_order: [left_shoulder, right_shoulder, wrist, front]
+  window_stride: 1
+  max_windows_per_demo: 1
+  taskvars: null
+  vae_latent_cache_dir: null
+  text_embedding_cache_dir: ./data/text_embeds_cache/gembench_microsteps_9v32
+  context_len: 128
+  cache_text_embeddings: true
+  cache_gripper_arrays: true
+  allow_missing_text_embeds: false
+  pretrained_norm_stats: ./data/gembench_microsteps_9v32_dataset_stats.json
+  norm_default_mode: "-2.0/2.0"
+  stats_scan_limit: 0
+  allow_partial_cache: false
+  policy_include_final_key: false
+  policy_min_key_delta: 1
+  processor:
+    action_output_dim: 8
+    proprio_output_dim: 8

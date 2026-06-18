@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 
 from .instructions import instruction_for_taskvar, load_instruction_map
+from .lmdb_reader import LMDBEpisodeStore
 from .normalization import DEFAULT_SHAPE_META, GEMBenchProcessorShim, load_or_create_stats, scanned_dataset_stats
 
 
@@ -708,3 +709,178 @@ class GEMBenchMicrosteps9V32Dataset(torch.utils.data.Dataset):
             torch.zeros((self.context_len, self.text_dim), dtype=torch.float32),
             torch.zeros((self.context_len,), dtype=torch.bool),
         )
+
+
+class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
+    """Official-style key-step policy samples with FastWAM 9V32 video aux.
+
+    The inherited `action` field remains the dense 32-step WAM auxiliary action
+    window. The policy target is exposed separately as `policy_action`, a single
+    normalized 8D action pointing from the current key-step observation to the
+    next key-step gripper target. This keeps the policy contract explicit while
+    preserving the existing 9V32 video/cache path.
+    """
+
+    def __init__(
+        self,
+        manifest_path: str,
+        rgb_cache_dir: str,
+        *,
+        keysteps_dir: str | None = None,
+        policy_max_index_demos: int | None = None,
+        policy_include_final_key: bool = False,
+        policy_min_key_delta: int = 1,
+        **kwargs: Any,
+    ):
+        vae_latent_cache_dir = kwargs.pop("vae_latent_cache_dir", None)
+        super().__init__(
+            manifest_path=manifest_path,
+            rgb_cache_dir=rgb_cache_dir,
+            vae_latent_cache_dir=None,
+            **kwargs,
+        )
+        self.policy_include_final_key = bool(policy_include_final_key)
+        self.policy_min_key_delta = int(policy_min_key_delta)
+        if self.policy_min_key_delta <= 0:
+            raise ValueError(f"policy_min_key_delta must be positive, got {self.policy_min_key_delta}")
+        resolved_keysteps_dir = keysteps_dir or self.manifest.get("keysteps_dir")
+        self.keysteps_dir = None if resolved_keysteps_dir in (None, "", "null") else str(resolved_keysteps_dir)
+        self.policy_max_index_demos = None if policy_max_index_demos is None else int(policy_max_index_demos)
+        self._keysteps_store: LMDBEpisodeStore | None = None
+
+        self.index = self._build_key_transition_index()
+        if not self.index:
+            raise ValueError(f"No GEMBench key-step policy transitions found from manifest={self.manifest_path}")
+
+        self.vae_latent_cache_dir = None if vae_latent_cache_dir in (None, "", "null") else str(vae_latent_cache_dir)
+        self.vae_latent_cache = self._load_vae_latent_cache()
+        if self.vae_latent_cache is not None:
+            self._validate_policy_vae_cache_coverage()
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        row_idx, current_key_idx, next_key_idx, key_position = self.index[int(idx)]
+        row = self.demo_rows[row_idx]
+        start = int(current_key_idx)
+        cache_path = self._cache_path(row)
+        gripper = self._load_gripper(row, cache_path)
+        action_raw = gripper[start + 1 : start + self.action_horizon + 1]
+        proprio_raw = gripper[start : start + self.action_horizon]
+        policy_action_raw = gripper[int(next_key_idx) : int(next_key_idx) + 1]
+        policy_proprio_raw = gripper[start : start + 1]
+
+        if self.vae_latent_cache is not None:
+            video_latents = self.vae_latent_cache.get(row, start)
+            sample = self._make_sample_from_arrays(
+                row=row,
+                start=start,
+                action_raw=action_raw,
+                proprio_raw=proprio_raw,
+                video=None,
+            )
+            sample["video_latents"] = video_latents
+        else:
+            sample = self._load_rgb_window_sample(row_idx=row_idx, start=start)
+
+        policy_action, _, policy_action_dim_is_pad, _ = self.processor.normalize(
+            torch.as_tensor(policy_action_raw, dtype=torch.float32),
+            torch.as_tensor(policy_proprio_raw, dtype=torch.float32),
+        )
+        sample["policy_action"] = policy_action
+        sample["policy_action_is_pad"] = torch.zeros(1, dtype=torch.bool)
+        sample["policy_action_dim_is_pad"] = policy_action_dim_is_pad
+        sample["policy_action_raw"] = torch.as_tensor(policy_action_raw, dtype=torch.float32)
+        sample["policy_current_key_idx"] = int(current_key_idx)
+        sample["policy_next_key_idx"] = int(next_key_idx)
+        sample["policy_key_position"] = int(key_position)
+        sample["policy_action_horizon"] = 1
+        sample["wam_aux_action_horizon"] = int(self.action_horizon)
+        sample["policy_target_type"] = "next_key_step"
+        return sample
+
+    def _build_key_transition_index(self) -> list[tuple[int, int, int, int]]:
+        out: list[tuple[int, int, int, int]] = []
+        demo_rows = self.demo_rows
+        if self.policy_max_index_demos is not None:
+            demo_rows = demo_rows[: self.policy_max_index_demos]
+        for row_idx, row in enumerate(demo_rows):
+            length = int(row["length"])
+            key_frameids = self._normalized_key_frameids(row, length=length)
+            if len(key_frameids) < 2:
+                continue
+            max_start = length - self.action_horizon - 1
+            row_items: list[tuple[int, int, int, int]] = []
+            for key_pos, current_key_idx in enumerate(key_frameids[:-1]):
+                next_key_idx = key_frameids[key_pos + 1]
+                if int(next_key_idx) - int(current_key_idx) < self.policy_min_key_delta:
+                    continue
+                if int(current_key_idx) > max_start:
+                    continue
+                row_items.append((row_idx, int(current_key_idx), int(next_key_idx), int(key_pos)))
+            if self.policy_include_final_key:
+                final_key = int(key_frameids[-1])
+                if final_key <= max_start:
+                    row_items.append((row_idx, final_key, final_key, len(key_frameids) - 1))
+            if self.max_windows_per_demo is not None:
+                row_items = row_items[: int(self.max_windows_per_demo)]
+            out.extend(row_items)
+        return out
+
+    def _normalized_key_frameids(self, row: dict[str, Any], *, length: int) -> list[int]:
+        raw = row.get("key_frameids")
+        if raw:
+            key_frameids = sorted({int(v) for v in raw if 0 <= int(v) < int(length)})
+        else:
+            if self.keysteps_dir is None:
+                return []
+            if self._keysteps_store is None:
+                self._keysteps_store = LMDBEpisodeStore(self.keysteps_dir)
+            key_frameids = sorted(
+                {
+                    int(v)
+                    for v in self._keysteps_store.key_frameids(str(row["taskvar"]), str(row["episode_key"]))
+                    if 0 <= int(v) < int(length)
+                }
+            )
+        if not key_frameids:
+            return []
+        if key_frameids[0] != 0:
+            key_frameids.insert(0, 0)
+        return key_frameids
+
+    def _load_vae_latent_cache(self) -> GEMBenchMicrosteps9V32VAELatentCache | None:
+        if self.vae_latent_cache_dir is None:
+            return None
+        manifest_sha = sha256_file(self.manifest_path)
+        expected_config = build_vae_cache_dataset_config(
+            manifest_path=self.manifest_path,
+            manifest_sha256=manifest_sha,
+            rgb_cache_dir=self.rgb_cache_dir,
+            seed=self.seed,
+            frame_offsets=self.frame_offsets,
+            action_horizon=self.action_horizon,
+            window_stride=self.window_stride,
+            video_size=self.video_size,
+            camera_order=self.camera_order,
+            cache_camera_order=self.cache_camera_order,
+        )
+        return GEMBenchMicrosteps9V32VAELatentCache(
+            self.vae_latent_cache_dir,
+            expected_dataset_config=expected_config,
+            expected_index=None,
+        )
+
+    def _validate_policy_vae_cache_coverage(self) -> None:
+        assert self.vae_latent_cache is not None
+        missing: list[str] = []
+        for row_idx, current_key_idx, _, _ in self.index:
+            row = self.demo_rows[row_idx]
+            key = window_cache_key(str(row["taskvar"]), str(row["episode_key"]), int(current_key_idx))
+            if key not in self.vae_latent_cache.row_by_key:
+                missing.append(key)
+                if len(missing) >= 5:
+                    break
+        if missing:
+            raise ValueError(
+                "GEMBench key-step policy samples are not covered by the 9V32 VAE latent cache: "
+                f"{missing}"
+            )
