@@ -90,6 +90,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         vae_latent_cache_dir=args.vae_latent_cache_dir,
         text_embedding_cache_dir=args.text_embedding_cache_dir,
         context_len=int(args.context_len),
+        text_encoder_id=args.text_encoder_id,
         cache_text_embeddings=True,
         cache_gripper_arrays=True,
         allow_missing_text_embeds=bool(args.allow_missing_text_embeds),
@@ -222,6 +223,7 @@ def main() -> int:
     parser.add_argument("--policy-min-key-delta", type=int, default=1)
     parser.add_argument("--text-embedding-cache-dir", default="./data/text_embeds_cache/gembench_microsteps_9v32")
     parser.add_argument("--context-len", type=int, default=128)
+    parser.add_argument("--text-encoder-id", default="wan22ti2v5b")
     parser.add_argument("--allow-missing-text-embeds", action="store_true")
     parser.add_argument("--pretrained-norm-stats", default="./data/gembench_microsteps_9v32_dataset_stats.json")
     parser.add_argument("--norm-default-mode", default="-2.0/2.0")

@@ -105,6 +105,7 @@ if len(entries) < len(demos):
 PY
 
 CACHE_DIR="${GEMBENCH_TEXT_EMBED_CACHE:-data/text_embeds_cache/gembench_microsteps_9v32}"
+TEXT_ENCODER_ID="${GEMBENCH_TEXT_ENCODER_ID:-wan22ti2v5b}"
 export DIFFSYNTH_DOWNLOAD_SOURCE="${DIFFSYNTH_DOWNLOAD_SOURCE:-huggingface}"
 export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 if [[ -n "${FASTWAM_PROXY:-}" && -z "${http_proxy:-}${https_proxy:-}${HTTP_PROXY:-}${HTTPS_PROXY:-}" ]]; then
@@ -117,7 +118,7 @@ if [[ "${PRECOMPUTE_GEMBENCH_TEXT:-1}" == "1" ]]; then
   "${PYTHON_BIN}" scripts/precompute_gembench_text_embeds.py \
     --no-redirect-common-files \
     --cache-dir "${CACHE_DIR}" \
-    --text-encoder-id umt5_xxl
+    --text-encoder-id "${TEXT_ENCODER_ID}"
 fi
 
 if [[ -n "${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR}" ]]; then
@@ -163,6 +164,7 @@ PYTHONPATH=src "${PYTHON_BIN}" scripts/audit_gembench_policy_keystep_9v32_contra
   --key-frameids-path "${GEMBENCH_KEY_FRAMEIDS_CACHE}" \
   --vae-latent-cache-dir "${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR}" \
   --text-embedding-cache-dir "${CACHE_DIR}" \
+  --text-encoder-id "${TEXT_ENCODER_ID}" \
   --pretrained-norm-stats ./data/gembench_microsteps_9v32_dataset_stats.json \
   --output-json "${AUDIT_DIR}/policy_keystep_9v32_4cam224_contract.json" \
   --output-md "${AUDIT_DIR}/policy_keystep_9v32_4cam224_contract.md" \

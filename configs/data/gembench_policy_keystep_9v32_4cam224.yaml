@@ -17,6 +17,7 @@ train:
   vae_latent_cache_dir: ${oc.env:GEMBENCH_9V32_4CAM_VAE_CACHE_DIR,null}
   text_embedding_cache_dir: ./data/text_embeds_cache/gembench_microsteps_9v32
   context_len: 128
+  text_encoder_id: wan22ti2v5b
   cache_text_embeddings: true
   cache_gripper_arrays: true
   allow_missing_text_embeds: false
@@ -49,6 +50,7 @@ val:
   vae_latent_cache_dir: null
   text_embedding_cache_dir: ./data/text_embeds_cache/gembench_microsteps_9v32
   context_len: 128
+  text_encoder_id: wan22ti2v5b
   cache_text_embeddings: true
   cache_gripper_arrays: true
   allow_missing_text_embeds: false
