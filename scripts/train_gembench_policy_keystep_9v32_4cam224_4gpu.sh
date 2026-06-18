@@ -25,6 +25,7 @@ export GEMBENCH_9V32_4CAM_MANIFEST="${GEMBENCH_9V32_4CAM_MANIFEST:-${GEMBENCH_RO
 export GEMBENCH_9V32_4CAM_RGB_CACHE_DIR="${GEMBENCH_9V32_4CAM_RGB_CACHE_DIR:-${GEMBENCH_ROOT}/fastwam_cache/microsteps_9v32_4cam224_rgb}"
 export GEMBENCH_9V32_4CAM_VAE_CACHE_DIR="${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR:-${GEMBENCH_ROOT}/fastwam_cache/vae_latents/microsteps_9v32_seed0_4cam224x896_t9_a32_v1}"
 export GEMBENCH_KEYSTEPS_BBOX_DIR="${GEMBENCH_KEYSTEPS_BBOX_DIR:-${GEMBENCH_ROOT}/train_dataset/keysteps_bbox/seed0}"
+export GEMBENCH_KEY_FRAMEIDS_CACHE="${GEMBENCH_KEY_FRAMEIDS_CACHE:-${GEMBENCH_ROOT}/fastwam_cache/microsteps_9v32_seed0_key_frameids.json}"
 export GEMBENCH_9V32_MANIFEST="${GEMBENCH_9V32_4CAM_MANIFEST}"
 export GEMBENCH_9V32_RGB_CACHE_DIR="${GEMBENCH_9V32_4CAM_RGB_CACHE_DIR}"
 export GEMBENCH_9V32_VAE_CACHE_DIR="${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR}"
@@ -71,6 +72,37 @@ PYTHONPATH=src "${PYTHON_BIN}" scripts/audit_gembench_microsteps_9v32_cache.py \
   --rgb-cache-dir "${GEMBENCH_9V32_4CAM_RGB_CACHE_DIR}" \
   --output-json "${AUDIT_DIR}/microsteps_9v32_4cam224_cache.json" \
   --output-md "${AUDIT_DIR}/microsteps_9v32_4cam224_cache.md"
+
+if [[ ! -f "${GEMBENCH_KEY_FRAMEIDS_CACHE}" ]]; then
+  echo "[gembench-policy-keystep-train] building key-frame sidecar: ${GEMBENCH_KEY_FRAMEIDS_CACHE}"
+  PYTHONPATH=src "${PYTHON_BIN}" scripts/build_gembench_microsteps_key_frameids.py \
+    --manifest "${GEMBENCH_9V32_4CAM_MANIFEST}" \
+    --microsteps-tar "${GEMBENCH_ROOT}/train_dataset/microsteps.tar.gz" \
+    --seed seed0 \
+    --output-json "${GEMBENCH_KEY_FRAMEIDS_CACHE}" \
+    --fail-on-missing
+fi
+"${PYTHON_BIN}" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+manifest_path = Path(os.environ["GEMBENCH_9V32_4CAM_MANIFEST"])
+sidecar_path = Path(os.environ["GEMBENCH_KEY_FRAMEIDS_CACHE"])
+manifest = json.loads(manifest_path.read_text())
+sidecar = json.loads(sidecar_path.read_text())
+demos = manifest.get("demos", [])
+entries = sidecar.get("entries", {})
+if not isinstance(demos, list) or not isinstance(entries, dict):
+    raise SystemExit(f"invalid key-frame sidecar schema: {sidecar_path}")
+if sidecar.get("num_errors", 0) or sidecar.get("num_missing_members", 0):
+    raise SystemExit(
+        f"incomplete key-frame sidecar {sidecar_path}: "
+        f"errors={sidecar.get('num_errors')} missing={sidecar.get('num_missing_members')}"
+    )
+if len(entries) < len(demos):
+    raise SystemExit(f"key-frame sidecar only covers {len(entries)}/{len(demos)} demos: {sidecar_path}")
+PY
 
 CACHE_DIR="${GEMBENCH_TEXT_EMBED_CACHE:-data/text_embeds_cache/gembench_microsteps_9v32}"
 export DIFFSYNTH_DOWNLOAD_SOURCE="${DIFFSYNTH_DOWNLOAD_SOURCE:-huggingface}"
@@ -128,6 +160,7 @@ PYTHONPATH=src "${PYTHON_BIN}" scripts/audit_gembench_policy_keystep_9v32_contra
   --manifest "${GEMBENCH_9V32_4CAM_MANIFEST}" \
   --rgb-cache-dir "${GEMBENCH_9V32_4CAM_RGB_CACHE_DIR}" \
   --keysteps-dir "${GEMBENCH_KEYSTEPS_BBOX_DIR}" \
+  --key-frameids-path "${GEMBENCH_KEY_FRAMEIDS_CACHE}" \
   --vae-latent-cache-dir "${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR}" \
   --text-embedding-cache-dir "${CACHE_DIR}" \
   --pretrained-norm-stats ./data/gembench_microsteps_9v32_dataset_stats.json \

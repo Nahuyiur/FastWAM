@@ -3,6 +3,7 @@ train:
   manifest_path: ${oc.env:GEMBENCH_9V32_4CAM_MANIFEST,/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_4cam224_manifest.json}
   rgb_cache_dir: ${oc.env:GEMBENCH_9V32_4CAM_RGB_CACHE_DIR,/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_4cam224_rgb}
   keysteps_dir: ${oc.env:GEMBENCH_KEYSTEPS_BBOX_DIR,/mnt/yuhan/datasets/GEMBench/train_dataset/keysteps_bbox/seed0}
+  key_frameids_path: ${oc.env:GEMBENCH_KEY_FRAMEIDS_CACHE,/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_seed0_key_frameids.json}
   split: train
   seed: seed0
   frame_offsets: [0, 4, 8, 12, 16, 20, 24, 28, 32]
@@ -34,6 +35,7 @@ val:
   manifest_path: ${oc.env:GEMBENCH_9V32_4CAM_MANIFEST,/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_4cam224_manifest.json}
   rgb_cache_dir: ${oc.env:GEMBENCH_9V32_4CAM_RGB_CACHE_DIR,/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_4cam224_rgb}
   keysteps_dir: ${oc.env:GEMBENCH_KEYSTEPS_BBOX_DIR,/mnt/yuhan/datasets/GEMBench/train_dataset/keysteps_bbox/seed0}
+  key_frameids_path: ${oc.env:GEMBENCH_KEY_FRAMEIDS_CACHE,/mnt/yuhan/datasets/GEMBench/fastwam_cache/microsteps_9v32_seed0_key_frameids.json}
   split: train
   seed: seed0
   frame_offsets: [0, 4, 8, 12, 16, 20, 24, 28, 32]

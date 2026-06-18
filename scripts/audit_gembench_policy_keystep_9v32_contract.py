@@ -75,6 +75,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         manifest_path=args.manifest,
         rgb_cache_dir=args.rgb_cache_dir,
         keysteps_dir=args.keysteps_dir,
+        key_frameids_path=args.key_frameids_path,
         split=args.split,
         seed=args.seed,
         frame_offsets=DEFAULT_FRAME_OFFSETS,
@@ -183,6 +184,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "official_full_score": False,
         "manifest": str(Path(args.manifest).expanduser().resolve()),
         "rgb_cache_dir": str(Path(args.rgb_cache_dir).expanduser().resolve()),
+        "key_frameids_path": None if args.key_frameids_path in (None, "", "null") else str(args.key_frameids_path),
         "vae_latent_cache_dir": None if args.vae_latent_cache_dir in (None, "", "null") else str(args.vae_latent_cache_dir),
         "dataset_len": int(len(dataset)),
         "policy_target_type": "next_key_step",
@@ -206,6 +208,7 @@ def main() -> int:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--rgb-cache-dir", required=True)
     parser.add_argument("--keysteps-dir", default="/mnt/yuhan/datasets/GEMBench/train_dataset/keysteps_bbox/seed0")
+    parser.add_argument("--key-frameids-path", default=None)
     parser.add_argument("--vae-latent-cache-dir", default=None)
     parser.add_argument("--split", default="train")
     parser.add_argument("--seed", default="seed0")

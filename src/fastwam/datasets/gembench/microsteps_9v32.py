@@ -727,6 +727,7 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
         rgb_cache_dir: str,
         *,
         keysteps_dir: str | None = None,
+        key_frameids_path: str | None = None,
         policy_max_index_demos: int | None = None,
         policy_include_final_key: bool = False,
         policy_min_key_delta: int = 1,
@@ -745,6 +746,8 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
             raise ValueError(f"policy_min_key_delta must be positive, got {self.policy_min_key_delta}")
         resolved_keysteps_dir = keysteps_dir or self.manifest.get("keysteps_dir")
         self.keysteps_dir = None if resolved_keysteps_dir in (None, "", "null") else str(resolved_keysteps_dir)
+        self.key_frameids_path = None if key_frameids_path in (None, "", "null") else str(key_frameids_path)
+        self._key_frameids_by_demo = self._load_key_frameids_sidecar()
         self.policy_max_index_demos = None if policy_max_index_demos is None else int(policy_max_index_demos)
         self._keysteps_store: LMDBEpisodeStore | None = None
 
@@ -829,6 +832,12 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
         raw = row.get("key_frameids")
         if raw:
             key_frameids = sorted({int(v) for v in raw if 0 <= int(v) < int(length)})
+        elif self._key_frameids_by_demo:
+            demo_key = self._sidecar_demo_key(row)
+            raw = self._key_frameids_by_demo.get(demo_key)
+            if raw is None:
+                return []
+            key_frameids = sorted({int(v) for v in raw if 0 <= int(v) < int(length)})
         else:
             if self.keysteps_dir is None:
                 return []
@@ -846,6 +855,27 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
         if key_frameids[0] != 0:
             key_frameids.insert(0, 0)
         return key_frameids
+
+    def _load_key_frameids_sidecar(self) -> dict[str, list[int]]:
+        if self.key_frameids_path is None:
+            return {}
+        path = Path(self.key_frameids_path).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"GEMBench key-frame sidecar not found: {path}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        entries = payload.get("entries")
+        if not isinstance(entries, dict):
+            raise ValueError(f"Invalid GEMBench key-frame sidecar entries in {path}")
+        out: dict[str, list[int]] = {}
+        for key, value in entries.items():
+            if not isinstance(value, list):
+                raise ValueError(f"Invalid key_frameids for {key!r} in {path}: {type(value)}")
+            out[str(key)] = [int(item) for item in value]
+        return out
+
+    @staticmethod
+    def _sidecar_demo_key(row: dict[str, Any]) -> str:
+        return f"{row['taskvar']}/{row['episode_key']}"
 
     def _load_vae_latent_cache(self) -> GEMBenchMicrosteps9V32VAELatentCache | None:
         if self.vae_latent_cache_dir is None:
