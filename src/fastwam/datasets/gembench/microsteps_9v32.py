@@ -845,7 +845,7 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
                 sample["policy_pcd_current_key_idx"] = int(policy_local_frame["pcd_current_key_idx"])
             if "pcd_key_frame_offset" in policy_local_frame:
                 sample["policy_pcd_key_frame_offset"] = int(policy_local_frame["pcd_key_frame_offset"])
-            if "pcd_next_key_idx" in policy_local_frame:
+            if policy_local_frame.get("pcd_next_key_idx") is not None:
                 sample["policy_pcd_next_key_idx"] = int(policy_local_frame["pcd_next_key_idx"])
             if "pcd_next_action_world" in policy_local_frame:
                 sample["policy_pcd_next_action_world"] = torch.as_tensor(
@@ -881,13 +881,14 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
         pcd_key_frame_offset = 0
         pcd_key_mapping_mode = "exact"
         if pcd_key_frameids:
+            searchable_key_frameids = pcd_key_frameids[:-1] if len(pcd_key_frameids) > 1 else pcd_key_frameids
             try:
-                pcd_step = pcd_key_frameids.index(int(current_key_idx))
+                pcd_step = searchable_key_frameids.index(int(current_key_idx))
             except ValueError as exc:
                 del exc
                 candidates = [
                     (abs(int(value) - int(current_key_idx)), int(pos))
-                    for pos, value in enumerate(pcd_key_frameids)
+                    for pos, value in enumerate(searchable_key_frameids)
                 ]
                 if not candidates:
                     raise ValueError(
