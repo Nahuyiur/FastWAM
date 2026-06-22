@@ -381,7 +381,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "sample": "current processed key-step point cloud/action[t] -> action[t+1]",
             "target_xyz_local": "(gt_action[:3] - pc_centroid) / pc_radius",
             "eval_world_xyz": "pred_xyz_local * pc_radius + pc_centroid, then z clamp before Mover",
-            "default_checked_contract": "xyz_shift=center, xyz_norm=False, rm_table=True, rm_robot=box_keep_gripper",
+            "checked_contract": (
+                f"xyz_shift={args.xyz_shift}, xyz_norm={bool(args.xyz_norm)}, "
+                f"rm_table={bool(args.rm_table)}, rm_robot={args.rm_robot}"
+            ),
+            "official_reference_contract": (
+                "robot-3dlotus simple_policy defaults use xyz_shift=center, "
+                "xyz_norm=False, rm_table=True, with job-script-specific robot filtering"
+            ),
             "rotation_note": "official job_scripts/train_3dlotus_policy.sh uses rot_type=euler_disc; this audit checks xyz frame/source, not model rotation head.",
         },
         "workspace": workspace,
