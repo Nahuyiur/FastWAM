@@ -822,7 +822,10 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
 
         policy_local_frame = None
         if self.policy_target_frame == "official_pcd_local":
-            policy_local_frame = self._policy_local_frame(row, int(current_key_idx))
+            policy_local_frame = self._policy_local_frame(row, int(current_key_idx), int(key_position))
+            if "pcd_next_action_world" in policy_local_frame:
+                policy_action_raw = np.asarray(policy_local_frame["pcd_next_action_world"], dtype=np.float32).reshape(1, -1)
+                policy_action_world_raw = policy_action_raw.copy()
             policy_action_raw = action_world_to_local(policy_action_raw, policy_local_frame)
 
         policy_action, _, policy_action_dim_is_pad, _ = self.processor.normalize(
@@ -840,6 +843,8 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
             sample["policy_local_radius"] = torch.as_tensor([float(policy_local_frame["radius"])], dtype=torch.float32)
             if "pcd_current_key_idx" in policy_local_frame:
                 sample["policy_pcd_current_key_idx"] = int(policy_local_frame["pcd_current_key_idx"])
+            if "pcd_key_frame_offset" in policy_local_frame:
+                sample["policy_pcd_key_frame_offset"] = int(policy_local_frame["pcd_key_frame_offset"])
             if "pcd_next_key_idx" in policy_local_frame:
                 sample["policy_pcd_next_key_idx"] = int(policy_local_frame["pcd_next_key_idx"])
             if "pcd_next_action_world" in policy_local_frame:
@@ -855,7 +860,12 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
         sample["policy_target_type"] = "next_key_step"
         return sample
 
-    def _policy_local_frame(self, row: dict[str, Any], current_key_idx: int) -> dict[str, Any]:
+    def _policy_local_frame(
+        self,
+        row: dict[str, Any],
+        current_key_idx: int,
+        key_position: int | None = None,
+    ) -> dict[str, Any]:
         taskvar = str(row["taskvar"])
         episode_key = str(row["episode_key"])
         cache_key = (taskvar, episode_key, int(current_key_idx))
@@ -868,14 +878,24 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
             self._policy_pcd_store = LMDBEpisodeStore(self.policy_pcd_data_dir)
         episode = self._policy_pcd_store.get(taskvar, episode_key)
         pcd_key_frameids = [int(v) for v in episode.get("key_frameids", [])]
+        pcd_key_frame_offset = 0
+        pcd_key_mapping_mode = "exact"
         if pcd_key_frameids:
             try:
                 pcd_step = pcd_key_frameids.index(int(current_key_idx))
             except ValueError as exc:
-                raise ValueError(
-                    f"Current key frame {current_key_idx} is not present in PCD key_frameids for "
-                    f"{taskvar}/{episode_key}: {pcd_key_frameids}"
-                ) from exc
+                del exc
+                candidates = [
+                    (abs(int(value) - int(current_key_idx)), int(pos))
+                    for pos, value in enumerate(pcd_key_frameids)
+                ]
+                if not candidates:
+                    raise ValueError(
+                        f"Current key frame {current_key_idx} is not present in empty PCD key_frameids for "
+                        f"{taskvar}/{episode_key}"
+                    )
+                pcd_key_frame_offset, pcd_step = min(candidates, key=lambda item: (item[0], item[1]))
+                pcd_key_mapping_mode = "nearest"
         else:
             pcd_step = int(current_key_idx)
         xyz_seq = episode["xyz"]
@@ -910,11 +930,14 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
             robot_3dlotus_root=self.robot_3dlotus_root,
         )
         frame["pcd_current_key_idx"] = int(pcd_key_frameids[pcd_step]) if pcd_key_frameids else int(current_key_idx)
+        frame["pcd_key_frame_offset"] = int(pcd_key_frame_offset)
+        frame["pcd_key_mapping_mode"] = str(pcd_key_mapping_mode)
         frame["pcd_next_key_idx"] = (
             int(pcd_key_frameids[pcd_step + 1])
             if pcd_key_frameids and pcd_step + 1 < len(pcd_key_frameids)
             else None
         )
+        frame["pcd_current_action_world"] = action[pcd_step].astype(np.float32)
         frame["pcd_next_action_world"] = (
             action[pcd_step + 1].astype(np.float32)
             if pcd_step + 1 < action.shape[0]
