@@ -17,6 +17,11 @@ if SRC_ROOT.is_dir() and str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from fastwam.datasets.gembench.lmdb_reader import LMDBEpisodeStore
+from fastwam.datasets.gembench.policy_local_frame import (
+    PolicyLocalFrameConfig,
+    action_world_to_local,
+    compute_policy_local_frame,
+)
 
 
 DEFAULT_PCD_DATA_DIR = "/mnt/yuhan/datasets/GEMBench/train_dataset/keysteps_bbox_pcd/seed0/voxel1cm"
@@ -108,48 +113,6 @@ def _to_array_list(value: Any) -> list[np.ndarray]:
     return [np.asarray(item) for item in arr]
 
 
-def _robot_keep_mask(
-    *,
-    xyz: np.ndarray,
-    bbox_info: dict[str, Any],
-    pose_info: dict[str, Any],
-    step: int,
-    rm_robot: str,
-    robot_3dlotus_root: str | None,
-) -> tuple[np.ndarray, str]:
-    if rm_robot == "none":
-        return np.ones((xyz.shape[0],), dtype=bool), "disabled"
-    _add_robot_3dlotus_path(robot_3dlotus_root)
-    try:
-        from genrobo3d.utils.robot_box import RobotBox
-
-        arm_links_info = (
-            {key: np.asarray(value)[int(step)] for key, value in bbox_info.items()},
-            {key: np.asarray(value)[int(step)] for key, value in pose_info.items()},
-        )
-        robot_box = RobotBox(
-            arm_links_info,
-            keep_gripper=(rm_robot == "box_keep_gripper"),
-            env_name="rlbench",
-        )
-        _, robot_point_ids = robot_box.get_pc_overlap_ratio(xyz=xyz, return_indices=True)
-        mask = np.ones((xyz.shape[0],), dtype=bool)
-        ids = np.asarray(list(robot_point_ids), dtype=np.int64)
-        if ids.size:
-            mask[ids] = False
-        return mask, "robot_3dlotus.RobotBox"
-    except Exception as exc:
-        raise RuntimeError(f"Could not apply rm_robot={rm_robot}: {type(exc).__name__}: {exc}") from exc
-
-
-def _sample_points(xyz: np.ndarray, rgb: np.ndarray, *, num_points: int, seed: int) -> tuple[np.ndarray, np.ndarray, bool]:
-    if int(num_points) <= 0 or xyz.shape[0] <= int(num_points):
-        return xyz, rgb, False
-    rng = np.random.default_rng(int(seed))
-    idx = rng.choice(xyz.shape[0], int(num_points), replace=False)
-    return xyz[idx], rgb[idx], True
-
-
 def _compute_policy_frame(
     *,
     episode: dict[str, Any],
@@ -166,75 +129,48 @@ def _compute_policy_frame(
     xyz_seq = _to_array_list(episode["xyz"])
     rgb_seq = _to_array_list(episode["rgb"])
     action = np.asarray(episode["action"], dtype=np.float64)
-    xyz = np.asarray(xyz_seq[int(step)], dtype=np.float64)
-    rgb = np.asarray(rgb_seq[int(step)])
-    if xyz.ndim != 2 or xyz.shape[-1] != 3:
-        raise ValueError(f"Expected xyz step array [N,3], got {xyz.shape}")
-    if rgb.ndim != 2 or rgb.shape[0] != xyz.shape[0]:
-        raise ValueError(f"Expected rgb step array [N,C] aligned with xyz, got xyz={xyz.shape} rgb={rgb.shape}")
-
-    before = int(xyz.shape[0])
-    if bool(rm_table):
-        keep = xyz[:, 2] > float(workspace["TABLE_HEIGHT"])
-        xyz = xyz[keep]
-        rgb = rgb[keep]
-    after_table = int(xyz.shape[0])
-    if after_table <= 0:
-        raise ValueError("No points remain after rm_table.")
-
-    robot_note = "disabled"
-    if rm_robot != "none":
-        keep, robot_note = _robot_keep_mask(
-            xyz=xyz,
-            bbox_info=episode["bbox_info"],
-            pose_info=episode["pose_info"],
-            step=int(step),
-            rm_robot=rm_robot,
-            robot_3dlotus_root=robot_3dlotus_root,
-        )
-        xyz = xyz[keep]
-        rgb = rgb[keep]
-    after_robot = int(xyz.shape[0])
-    if after_robot <= 0:
-        raise ValueError("No points remain after rm_robot.")
-
-    xyz, rgb, sampled = _sample_points(
-        xyz,
-        rgb,
-        num_points=int(num_points),
-        seed=int(sample_seed) + int(step) * 1009,
-    )
     ee_pose = action[int(step)].copy()
     gt_action_world = action[int(step) + 1].copy()
-    if xyz_shift == "none":
-        centroid = np.zeros((3,), dtype=np.float64)
-    elif xyz_shift == "center":
-        centroid = np.mean(xyz, axis=0)
-    elif xyz_shift == "gripper":
-        centroid = ee_pose[:3].copy()
-    else:
-        raise ValueError(f"Unsupported xyz_shift={xyz_shift!r}")
-
-    if bool(xyz_norm):
-        radius = float(np.max(np.sqrt(np.sum((xyz - centroid) ** 2, axis=1))))
-        if not np.isfinite(radius) or radius <= 1.0e-8:
-            radius = 1.0
-    else:
-        radius = 1.0
-
-    gt_local = (gt_action_world[:3] - centroid) / radius
-    ee_local = (ee_pose[:3] - centroid) / radius
+    arm_links_info = None
+    if rm_robot != "none":
+        arm_links_info = (
+            {key: np.asarray(value)[int(step)] for key, value in episode["bbox_info"].items()},
+            {key: np.asarray(value)[int(step)] for key, value in episode["pose_info"].items()},
+        )
+    frame = compute_policy_local_frame(
+        xyz=np.asarray(xyz_seq[int(step)], dtype=np.float64),
+        rgb=np.asarray(rgb_seq[int(step)]),
+        ee_pose=ee_pose,
+        arm_links_info=arm_links_info,
+        workspace=workspace,
+        config=PolicyLocalFrameConfig(
+            enabled=True,
+            xyz_shift=xyz_shift,
+            xyz_norm=bool(xyz_norm),
+            rm_table=bool(rm_table),
+            rm_robot=str(rm_robot),
+            num_points=int(num_points),
+            sample_seed=int(sample_seed) + int(step) * 1009,
+            voxel_size=0.0,
+            require_open3d=False,
+        ),
+        robot_3dlotus_root=robot_3dlotus_root,
+    )
+    centroid = np.asarray(frame["centroid"], dtype=np.float64)
+    radius = float(frame["radius"])
+    gt_local = action_world_to_local(gt_action_world, frame)[:3]
+    ee_local = action_world_to_local(ee_pose, frame)[:3]
     recon = gt_local * radius + centroid
     local_dist = float(np.linalg.norm(gt_local))
     world_step_dist = float(np.linalg.norm(gt_action_world[:3] - ee_pose[:3]))
     return {
         "step": int(step),
-        "points_before_filter": before,
-        "points_after_table": after_table,
-        "points_after_robot": after_robot,
-        "points_used": int(xyz.shape[0]),
-        "sampled_to_num_points": bool(sampled),
-        "robot_filter": robot_note,
+        "points_before_filter": int(frame["points_before_workspace"]),
+        "points_after_table": int(frame["points_after_workspace"]),
+        "points_after_robot": int(frame["points_after_robot"]),
+        "points_used": int(frame["points_used"]),
+        "sampled_to_num_points": bool(frame["sampled_to_num_points"]),
+        "robot_filter": str(frame["robot_filter"]),
         "centroid": [float(v) for v in centroid.tolist()],
         "radius": float(radius),
         "ee_xyz_world": [float(v) for v in ee_pose[:3].tolist()],

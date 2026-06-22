@@ -1,0 +1,54 @@
+# @package _global_
+
+defaults:
+  - override /data: gembench_policy_keystep_9v32_4cam224_official_local
+  - override /model: fastwam_localwan
+  - _self_
+
+batch_size: 4
+num_workers: 4
+prefetch_factor: 4
+persistent_workers: true
+
+model:
+  mot_checkpoint_mixed_attn: false
+  loss:
+    lambda_video: 1.0
+    lambda_policy_action: 1.0
+
+policy_contract:
+  action_horizon: 1
+  policy_vgm_auxiliary_action_horizon: 32
+  policy_target_type: next_key_step
+  policy_target_frame: official_pcd_local
+  policy_local_xyz_shift: center
+  policy_local_xyz_norm: false
+  policy_local_rm_table: true
+  policy_local_rm_robot: none
+  policy_local_eval_rm_robot: none
+  policy_local_num_points: 0
+  policy_local_eval_voxel_size: 0.0
+  policy_local_require_open3d: false
+  official_eval_executed_actions_per_step: 1
+  official_eval_chunk_replan_k: 1
+  wam_aux_num_video_frames: 9
+  wam_aux_action_horizon: 32
+
+lr_scheduler_type: cosine
+learning_rate: 1e-4
+num_epochs: 1
+max_steps: 50000
+log_every: 10
+save_every: 2000
+eval_every: 2000
+eval_num_inference_steps: 10
+policy_action_eval:
+  enabled: true
+  save_json: true
+
+mixed_precision: bf16
+gradient_accumulation_steps: 1
+weight_decay: 1e-2
+optimizer_foreach: false
+optimizer_fused: true
+resume: null

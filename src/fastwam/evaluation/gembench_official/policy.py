@@ -13,6 +13,11 @@ from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 
 from fastwam.datasets.gembench.normalization import GEMBenchProcessorShim
+from fastwam.datasets.gembench.policy_local_frame import (
+    PolicyLocalFrameConfig,
+    action_local_to_world,
+    compute_policy_local_frame,
+)
 from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 from fastwam.runtime import _mixed_precision_to_model_dtype
@@ -88,6 +93,60 @@ class GEMBenchOfficialActioner:
         self.video_size = [int(v) for v in data_train.get("video_size", [224, 672])]
         self.camera_order = [str(v) for v in data_train.get("camera_order", ["front", "wrist", "left_shoulder"])]
         self.norm_default_mode = str(data_train.get("norm_default_mode", "-2.0/2.0"))
+        self.policy_target_frame = str(
+            self.policy_contract.get("policy_target_frame", data_train.get("policy_target_frame", "world"))
+        )
+        if self.policy_target_frame not in ("world", "official_pcd_local"):
+            raise ValueError(
+                f"Unsupported policy_target_frame={self.policy_target_frame!r}; "
+                "expected 'world' or 'official_pcd_local'."
+            )
+        self.policy_local_eval_config = PolicyLocalFrameConfig(
+            enabled=(self.policy_target_frame == "official_pcd_local"),
+            xyz_shift=str(
+                self.policy_contract.get(
+                    "policy_local_xyz_shift", data_train.get("policy_local_xyz_shift", "center")
+                )
+            ),
+            xyz_norm=bool(
+                self.policy_contract.get(
+                    "policy_local_xyz_norm", data_train.get("policy_local_xyz_norm", False)
+                )
+            ),
+            rm_table=bool(
+                self.policy_contract.get(
+                    "policy_local_rm_table", data_train.get("policy_local_rm_table", True)
+                )
+            ),
+            rm_robot=str(
+                self.policy_contract.get(
+                    "policy_local_eval_rm_robot",
+                    self.policy_contract.get(
+                        "policy_local_rm_robot", data_train.get("policy_local_rm_robot", "none")
+                    ),
+                )
+            ),
+            num_points=int(
+                self.policy_contract.get(
+                    "policy_local_num_points", data_train.get("policy_local_num_points", 4096)
+                )
+            ),
+            sample_seed=int(
+                self.policy_contract.get(
+                    "policy_local_sample_seed", data_train.get("policy_local_sample_seed", 0)
+                )
+            ),
+            voxel_size=float(
+                self.policy_contract.get(
+                    "policy_local_eval_voxel_size", data_train.get("policy_local_eval_voxel_size", 0.01)
+                )
+            ),
+            require_open3d=bool(
+                self.policy_contract.get(
+                    "policy_local_require_open3d", data_train.get("policy_local_require_open3d", False)
+                )
+            ),
+        )
         frame_offsets = data_train.get("frame_offsets")
         self.num_video_frames = (
             len(frame_offsets) if frame_offsets is not None else int(data_train.get("num_video_frames", 9))
@@ -250,6 +309,29 @@ class GEMBenchOfficialActioner:
         out[7] = 1.0 if float(out[7]) > 0.5 else 0.0
         return out
 
+    def _policy_local_frame(self, obs_state_dict: dict[str, Any], *, taskvar: str, episode_id: int, step_id: int) -> dict[str, Any] | None:
+        if self.policy_target_frame != "official_pcd_local":
+            return None
+        pc = np.asarray(obs_state_dict.get("pc"), dtype=np.float64)
+        if pc.ndim != 4 or pc.shape[-1] != 3:
+            raise ValueError(
+                "policy_target_frame='official_pcd_local' requires obs_state_dict['pc'] with shape [C,H,W,3], "
+                f"got {pc.shape}"
+            )
+        rgb = obs_state_dict.get("rgb")
+        gripper = np.asarray(obs_state_dict.get("gripper"), dtype=np.float32)
+        arm_links_info = obs_state_dict.get("arm_links_info")
+        return compute_policy_local_frame(
+            xyz=pc,
+            rgb=None if rgb is None else np.asarray(rgb),
+            ee_pose=gripper,
+            arm_links_info=arm_links_info,
+            config=self.policy_local_eval_config,
+            sample_seed=int(self.policy_local_eval_config.sample_seed)
+            + int(episode_id) * 1009
+            + int(step_id) * 9176,
+        )
+
     def _prediction_seed(self, *, taskvar: str, episode_id: int, step_id: int) -> int | None:
         if self.model_seed < 0:
             return None
@@ -323,25 +405,58 @@ class GEMBenchOfficialActioner:
             )
         if normalized_chunk.ndim != 2 or normalized_chunk.shape[-1] != 8 or normalized_chunk.shape[0] < 1:
             raise ValueError(f"Normalized action chunk must be non-empty [T,8], got {normalized_chunk.shape}")
-        denormalized_action = self._denormalize_action_chunk(normalized_action)
-        if denormalized_action.ndim != 2 or denormalized_action.shape[-1] != 8 or denormalized_action.shape[0] < 1:
-            raise ValueError(f"Denormalized action chunk must be non-empty [T,8], got {denormalized_action.shape}")
-        if int(denormalized_action.shape[0]) != int(requested_action_horizon):
+        model_denormalized_action = self._denormalize_action_chunk(normalized_action)
+        if (
+            model_denormalized_action.ndim != 2
+            or model_denormalized_action.shape[-1] != 8
+            or model_denormalized_action.shape[0] < 1
+        ):
             raise ValueError(
-                f"Predicted action chunk horizon={denormalized_action.shape[0]} does not match "
+                f"Denormalized action chunk must be non-empty [T,8], got {model_denormalized_action.shape}"
+            )
+        if int(model_denormalized_action.shape[0]) != int(requested_action_horizon):
+            raise ValueError(
+                f"Predicted action chunk horizon={model_denormalized_action.shape[0]} does not match "
                 f"requested chunk_action_horizon={requested_action_horizon}."
             )
-        executed_chunk = np.stack([self._postprocess_action(action) for action in denormalized_action], axis=0)
-        z_delta = executed_chunk[:, 2] - denormalized_action[:, 2]
-        denorm_delta = denormalized_action - normalized_chunk
+        policy_local_frame = self._policy_local_frame(
+            obs_state_dict,
+            taskvar=taskvar,
+            episode_id=episode_id,
+            step_id=step_id,
+        )
+        if policy_local_frame is None:
+            world_denormalized_action = model_denormalized_action
+            policy_frame_summary = {"mode": "world"}
+        else:
+            world_denormalized_action = action_local_to_world(model_denormalized_action, policy_local_frame)
+            policy_frame_summary = {
+                "mode": "official_pcd_local",
+                "centroid": [float(v) for v in np.asarray(policy_local_frame["centroid"]).reshape(3).tolist()],
+                "radius": float(policy_local_frame["radius"]),
+                "xyz_shift": policy_local_frame["xyz_shift"],
+                "xyz_norm": bool(policy_local_frame["xyz_norm"]),
+                "rm_table": bool(policy_local_frame["rm_table"]),
+                "rm_robot": str(policy_local_frame["rm_robot"]),
+                "voxel_size": float(policy_local_frame["voxel_size"]),
+                "voxel_filter": str(policy_local_frame["voxel_filter"]),
+                "robot_filter": str(policy_local_frame["robot_filter"]),
+                "points_used": int(policy_local_frame["points_used"]),
+            }
+        executed_chunk = np.stack([self._postprocess_action(action) for action in world_denormalized_action], axis=0)
+        z_delta = executed_chunk[:, 2] - world_denormalized_action[:, 2]
+        denorm_delta = model_denormalized_action - normalized_chunk
         return {
             "action_chunk": executed_chunk.astype(np.float32),
             "normalized_action_chunk": normalized_chunk.astype(np.float32),
-            "denormalized_action_chunk": denormalized_action.astype(np.float32),
+            "denormalized_action_chunk": world_denormalized_action.astype(np.float32),
+            "model_denormalized_action_chunk": model_denormalized_action.astype(np.float32),
             "instruction": instruction,
             "step_id": int(step_id),
             "relation": relation_summary,
-            "chunk_horizon": int(denormalized_action.shape[0]),
+            "policy_target_frame": self.policy_target_frame,
+            "policy_local_frame": policy_frame_summary,
+            "chunk_horizon": int(world_denormalized_action.shape[0]),
             "chunk_action_horizon": int(requested_action_horizon),
             "policy_action_horizon": int(self.action_horizon),
             "training_action_horizon": int(self.training_action_horizon),
@@ -356,8 +471,12 @@ class GEMBenchOfficialActioner:
                 "max_abs_denorm_delta": float(np.max(np.abs(denorm_delta))),
                 "normalized_min": float(np.min(normalized_chunk)),
                 "normalized_max": float(np.max(normalized_chunk)),
-                "denormalized_min": float(np.min(denormalized_action)),
-                "denormalized_max": float(np.max(denormalized_action)),
+                "denormalized_min": float(np.min(world_denormalized_action)),
+                "denormalized_max": float(np.max(world_denormalized_action)),
+                "model_denormalized_min": float(np.min(model_denormalized_action)),
+                "model_denormalized_max": float(np.max(model_denormalized_action)),
+                "world_denormalized_min": float(np.min(world_denormalized_action)),
+                "world_denormalized_max": float(np.max(world_denormalized_action)),
             },
             "postprocess": {
                 "table_height": float(self.OFFICIAL_RLBENCH_TABLE_HEIGHT),
@@ -394,6 +513,7 @@ class GEMBenchOfficialActioner:
         action_chunk = np.asarray(output["action_chunk"], dtype=np.float32)
         normalized_chunk = np.asarray(output["normalized_action_chunk"], dtype=np.float32)
         denormalized_chunk = np.asarray(output["denormalized_action_chunk"], dtype=np.float32)
+        model_denormalized_chunk = np.asarray(output["model_denormalized_action_chunk"], dtype=np.float32)
         if executed_index >= int(action_chunk.shape[0]):
             raise ValueError(
                 f"executed_action_index={executed_index} is outside denormalized action chunk "
@@ -403,9 +523,12 @@ class GEMBenchOfficialActioner:
             "action": action_chunk[executed_index],
             "normalized_action": normalized_chunk[executed_index],
             "denormalized_action": denormalized_chunk[executed_index],
+            "model_denormalized_action": model_denormalized_chunk[executed_index],
             "instruction": output["instruction"],
             "step_id": int(step_id),
             "relation": output["relation"],
+            "policy_target_frame": output["policy_target_frame"],
+            "policy_local_frame": output["policy_local_frame"],
             "chunk_horizon": int(output["chunk_horizon"]),
             "chunk_action_horizon": int(output["chunk_action_horizon"]),
             "executed_action_index": executed_index,

@@ -16,15 +16,16 @@ export WANDB_PROJECT="${WANDB_PROJECT:-fastwam-gembench-policy-keystep}"
 source scripts/setup_gembench_wandb.sh
 
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
-TASK_NAME="gembench_policy_keystep_9v32_4cam224_1e-4"
+TASK_NAME="${FASTWAM_GEMBENCH_POLICY_KEYSTEP_TASK_NAME:-gembench_policy_keystep_9v32_4cam224_1e-4}"
 PYTHON_BIN="${FASTWAM_CONDA_ENV}/bin/python"
 export PATH="${FASTWAM_CONDA_ENV}/bin:${PATH}"
 
-RUN_ID="${RUN_ID:-fastwam_gembench_policy_keystep_4cam224_wamaux9v32_b4a1_$(date +%Y%m%d_%H%M%S)}"
+RUN_ID="${RUN_ID:-${FASTWAM_GEMBENCH_POLICY_KEYSTEP_RUN_PREFIX:-fastwam_gembench_policy_keystep_4cam224_wamaux9v32_b4a1}_$(date +%Y%m%d_%H%M%S)}"
 export GEMBENCH_9V32_4CAM_MANIFEST="${GEMBENCH_9V32_4CAM_MANIFEST:-${GEMBENCH_ROOT}/fastwam_cache/microsteps_9v32_4cam224_manifest.json}"
 export GEMBENCH_9V32_4CAM_RGB_CACHE_DIR="${GEMBENCH_9V32_4CAM_RGB_CACHE_DIR:-${GEMBENCH_ROOT}/fastwam_cache/microsteps_9v32_4cam224_rgb}"
 export GEMBENCH_9V32_4CAM_VAE_CACHE_DIR="${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR:-${GEMBENCH_ROOT}/fastwam_cache/vae_latents/microsteps_9v32_seed0_4cam224x896_t9_a32_v1}"
 export GEMBENCH_KEYSTEPS_BBOX_DIR="${GEMBENCH_KEYSTEPS_BBOX_DIR:-${GEMBENCH_ROOT}/train_dataset/keysteps_bbox/seed0}"
+export GEMBENCH_KEYSTEPS_BBOX_PCD_DIR="${GEMBENCH_KEYSTEPS_BBOX_PCD_DIR:-${GEMBENCH_ROOT}/train_dataset/keysteps_bbox_pcd/seed0/voxel1cm}"
 export GEMBENCH_KEY_FRAMEIDS_CACHE="${GEMBENCH_KEY_FRAMEIDS_CACHE:-${GEMBENCH_ROOT}/fastwam_cache/microsteps_9v32_seed0_key_frameids.json}"
 export GEMBENCH_9V32_MANIFEST="${GEMBENCH_9V32_4CAM_MANIFEST}"
 export GEMBENCH_9V32_RGB_CACHE_DIR="${GEMBENCH_9V32_4CAM_RGB_CACHE_DIR}"
@@ -42,6 +43,10 @@ if [[ ! -f "${GEMBENCH_ROOT}/train_dataset/microsteps.tar.gz" ]]; then
 fi
 if [[ ! -d "${GEMBENCH_KEYSTEPS_BBOX_DIR}" ]]; then
   echo "[gembench-policy-keystep-train] missing train keysteps LMDB: ${GEMBENCH_KEYSTEPS_BBOX_DIR}" >&2
+  exit 1
+fi
+if [[ "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_RUN_PCD_AUDIT:-0}" == "1" && ! -d "${GEMBENCH_KEYSTEPS_BBOX_PCD_DIR}" ]]; then
+  echo "[gembench-policy-keystep-train] missing train keysteps PCD LMDB: ${GEMBENCH_KEYSTEPS_BBOX_PCD_DIR}" >&2
   exit 1
 fi
 for arg in "$@"; do
@@ -156,6 +161,19 @@ fi
 if [[ "${GEMBENCH_POLICY_KEYSTEP_AUDIT_ALLOW_MISSING_TEXT:-0}" == "1" ]]; then
   POLICY_AUDIT_ARGS+=(--allow-missing-text-embeds)
 fi
+if [[ -n "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_POLICY_TARGET_FRAME:-}" ]]; then
+  POLICY_AUDIT_ARGS+=(--policy-target-frame "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_POLICY_TARGET_FRAME}")
+fi
+if [[ "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_POLICY_TARGET_FRAME:-}" == "official_pcd_local" ]]; then
+  POLICY_AUDIT_ARGS+=(
+    --policy-pcd-data-dir "${GEMBENCH_KEYSTEPS_BBOX_PCD_DIR}"
+    --policy-local-xyz-shift "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_LOCAL_XYZ_SHIFT:-center}"
+    --policy-local-rm-robot "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_LOCAL_RM_ROBOT:-none}"
+    --policy-local-num-points "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_LOCAL_NUM_POINTS:-0}"
+    --policy-local-train-voxel-size "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_LOCAL_TRAIN_VOXEL_SIZE:-0.0}"
+    --robot-3dlotus-root "${ROBOT_3DLOTUS_ROOT:-/mnt/yuhan/gembench_sim/robot-3dlotus}"
+  )
+fi
 
 PYTHONPATH=src "${PYTHON_BIN}" scripts/audit_gembench_policy_keystep_9v32_contract.py \
   --manifest "${GEMBENCH_9V32_4CAM_MANIFEST}" \
@@ -170,10 +188,26 @@ PYTHONPATH=src "${PYTHON_BIN}" scripts/audit_gembench_policy_keystep_9v32_contra
   --output-md "${AUDIT_DIR}/policy_keystep_9v32_4cam224_contract.md" \
   "${POLICY_AUDIT_ARGS[@]}"
 
+if [[ "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_RUN_PCD_AUDIT:-0}" == "1" ]]; then
+  PCD_AUDIT_ARGS=()
+  if [[ "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_STRICT_MANIFEST_COVERAGE:-0}" == "1" ]]; then
+    PCD_AUDIT_ARGS+=(--require-manifest-covers-expected-taskvars)
+  fi
+  PYTHONPATH=src "${PYTHON_BIN}" scripts/audit_gembench_official_pcd_policy_contract.py \
+    --pcd-data-dir "${GEMBENCH_KEYSTEPS_BBOX_PCD_DIR}" \
+    --fastwam-9v32-manifest "${GEMBENCH_9V32_4CAM_MANIFEST}" \
+    --rm-robot "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_PCD_AUDIT_RM_ROBOT:-none}" \
+    --episodes-per-taskvar "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_PCD_AUDIT_EPISODES:-1}" \
+    --max-steps-per-episode "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_PCD_AUDIT_STEPS:-2}" \
+    --output-json "${AUDIT_DIR}/official_pcd_policy_contract.json" \
+    --output-md "${AUDIT_DIR}/official_pcd_policy_contract.md" \
+    "${PCD_AUDIT_ARGS[@]}"
+fi
+
 export ACCELERATE_CONFIG_FILE="${ACCELERATE_CONFIG_FILE:-scripts/accelerate_configs/accelerate_zero2_ds.yaml}"
-WANDB_SUBPROJECT_DEFAULT="${WANDB_SUBPROJECT:-fastwam-gembench-policy-keystep-4cam224}"
+WANDB_SUBPROJECT_DEFAULT="${WANDB_SUBPROJECT:-${FASTWAM_GEMBENCH_POLICY_KEYSTEP_WANDB_SUBPROJECT:-fastwam-gembench-policy-keystep-4cam224}}"
 WANDB_RUN_NAME_DEFAULT="${WANDB_RUN_NAME:-${RUN_ID}}"
-WANDB_GROUP_DEFAULT="${WANDB_GROUP:-fastwam-gembench-policy-keystep-4cam224-wamaux9v32-b4a1}"
+WANDB_GROUP_DEFAULT="${WANDB_GROUP:-${FASTWAM_GEMBENCH_POLICY_KEYSTEP_WANDB_GROUP:-fastwam-gembench-policy-keystep-4cam224-wamaux9v32-b4a1}}"
 mapfile -t WANDB_OVERRIDES < <(gembench_wandb_hydra_overrides "${WANDB_SUBPROJECT_DEFAULT}" "${WANDB_RUN_NAME_DEFAULT}" "${WANDB_GROUP_DEFAULT}")
 mapfile -t WANDB_OVERRIDES < <(gembench_filter_wandb_hydra_overrides "${WANDB_OVERRIDES[@]}" -- "$@")
 

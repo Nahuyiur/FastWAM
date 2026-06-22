@@ -14,6 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 from .instructions import instruction_for_taskvar, load_instruction_map
 from .lmdb_reader import LMDBEpisodeStore
 from .normalization import DEFAULT_SHAPE_META, GEMBenchProcessorShim, load_or_create_stats, scanned_dataset_stats
+from .policy_local_frame import PolicyLocalFrameConfig, action_world_to_local, compute_policy_local_frame
 
 
 SCHEMA_VERSION = "gembench_microsteps_9v32_v1"
@@ -731,6 +732,17 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
         policy_max_index_demos: int | None = None,
         policy_include_final_key: bool = False,
         policy_min_key_delta: int = 1,
+        policy_target_frame: str = "world",
+        policy_pcd_data_dir: str | None = None,
+        policy_local_xyz_shift: str = "center",
+        policy_local_xyz_norm: bool = False,
+        policy_local_rm_table: bool = True,
+        policy_local_rm_robot: str = "none",
+        policy_local_num_points: int = 4096,
+        policy_local_sample_seed: int = 0,
+        policy_local_train_voxel_size: float = 0.0,
+        policy_local_require_open3d: bool = False,
+        robot_3dlotus_root: str | None = None,
         **kwargs: Any,
     ):
         vae_latent_cache_dir = kwargs.pop("vae_latent_cache_dir", None)
@@ -744,12 +756,35 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
         self.policy_min_key_delta = int(policy_min_key_delta)
         if self.policy_min_key_delta <= 0:
             raise ValueError(f"policy_min_key_delta must be positive, got {self.policy_min_key_delta}")
+        self.policy_target_frame = str(policy_target_frame)
+        if self.policy_target_frame not in ("world", "official_pcd_local"):
+            raise ValueError(
+                "policy_target_frame must be 'world' or 'official_pcd_local', "
+                f"got {self.policy_target_frame!r}"
+            )
+        self.policy_local_frame_config = PolicyLocalFrameConfig(
+            enabled=(self.policy_target_frame == "official_pcd_local"),
+            xyz_shift=str(policy_local_xyz_shift),
+            xyz_norm=bool(policy_local_xyz_norm),
+            rm_table=bool(policy_local_rm_table),
+            rm_robot=str(policy_local_rm_robot),
+            num_points=int(policy_local_num_points),
+            sample_seed=int(policy_local_sample_seed),
+            voxel_size=float(policy_local_train_voxel_size),
+            require_open3d=bool(policy_local_require_open3d),
+        )
+        self.policy_pcd_data_dir = None if policy_pcd_data_dir in (None, "", "null") else str(policy_pcd_data_dir)
+        if self.policy_target_frame == "official_pcd_local" and self.policy_pcd_data_dir is None:
+            raise ValueError("policy_target_frame='official_pcd_local' requires policy_pcd_data_dir.")
+        self.robot_3dlotus_root = None if robot_3dlotus_root in (None, "", "null") else str(robot_3dlotus_root)
         resolved_keysteps_dir = keysteps_dir or self.manifest.get("keysteps_dir")
         self.keysteps_dir = None if resolved_keysteps_dir in (None, "", "null") else str(resolved_keysteps_dir)
         self.key_frameids_path = None if key_frameids_path in (None, "", "null") else str(key_frameids_path)
         self._key_frameids_by_demo = self._load_key_frameids_sidecar()
         self.policy_max_index_demos = None if policy_max_index_demos is None else int(policy_max_index_demos)
         self._keysteps_store: LMDBEpisodeStore | None = None
+        self._policy_pcd_store: LMDBEpisodeStore | None = None
+        self._policy_local_frame_cache: dict[tuple[str, str, int], dict[str, Any]] = {}
 
         self.index = self._build_key_transition_index()
         if not self.index:
@@ -769,6 +804,7 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
         action_raw = gripper[start + 1 : start + self.action_horizon + 1]
         proprio_raw = gripper[start : start + self.action_horizon]
         policy_action_raw = gripper[int(next_key_idx) : int(next_key_idx) + 1]
+        policy_action_world_raw = policy_action_raw.copy()
         policy_proprio_raw = gripper[start : start + 1]
 
         if self.vae_latent_cache is not None:
@@ -784,6 +820,11 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
         else:
             sample = self._load_rgb_window_sample(row_idx=row_idx, start=start)
 
+        policy_local_frame = None
+        if self.policy_target_frame == "official_pcd_local":
+            policy_local_frame = self._policy_local_frame(row, int(current_key_idx))
+            policy_action_raw = action_world_to_local(policy_action_raw, policy_local_frame)
+
         policy_action, _, policy_action_dim_is_pad, _ = self.processor.normalize(
             torch.as_tensor(policy_action_raw, dtype=torch.float32),
             torch.as_tensor(policy_proprio_raw, dtype=torch.float32),
@@ -792,6 +833,20 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
         sample["policy_action_is_pad"] = torch.zeros(1, dtype=torch.bool)
         sample["policy_action_dim_is_pad"] = policy_action_dim_is_pad
         sample["policy_action_raw"] = torch.as_tensor(policy_action_raw, dtype=torch.float32)
+        sample["policy_action_world_raw"] = torch.as_tensor(policy_action_world_raw, dtype=torch.float32)
+        sample["policy_target_frame"] = self.policy_target_frame
+        if policy_local_frame is not None:
+            sample["policy_local_centroid"] = torch.as_tensor(policy_local_frame["centroid"], dtype=torch.float32)
+            sample["policy_local_radius"] = torch.as_tensor([float(policy_local_frame["radius"])], dtype=torch.float32)
+            if "pcd_current_key_idx" in policy_local_frame:
+                sample["policy_pcd_current_key_idx"] = int(policy_local_frame["pcd_current_key_idx"])
+            if "pcd_next_key_idx" in policy_local_frame:
+                sample["policy_pcd_next_key_idx"] = int(policy_local_frame["pcd_next_key_idx"])
+            if "pcd_next_action_world" in policy_local_frame:
+                sample["policy_pcd_next_action_world"] = torch.as_tensor(
+                    policy_local_frame["pcd_next_action_world"],
+                    dtype=torch.float32,
+                )
         sample["policy_current_key_idx"] = int(current_key_idx)
         sample["policy_next_key_idx"] = int(next_key_idx)
         sample["policy_key_position"] = int(key_position)
@@ -799,6 +854,74 @@ class GEMBenchKeyStepPolicy9V32Dataset(GEMBenchMicrosteps9V32Dataset):
         sample["wam_aux_action_horizon"] = int(self.action_horizon)
         sample["policy_target_type"] = "next_key_step"
         return sample
+
+    def _policy_local_frame(self, row: dict[str, Any], current_key_idx: int) -> dict[str, Any]:
+        taskvar = str(row["taskvar"])
+        episode_key = str(row["episode_key"])
+        cache_key = (taskvar, episode_key, int(current_key_idx))
+        cached = self._policy_local_frame_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if self._policy_pcd_store is None:
+            if self.policy_pcd_data_dir is None:
+                raise ValueError("policy_pcd_data_dir is required for official_pcd_local policy targets.")
+            self._policy_pcd_store = LMDBEpisodeStore(self.policy_pcd_data_dir)
+        episode = self._policy_pcd_store.get(taskvar, episode_key)
+        pcd_key_frameids = [int(v) for v in episode.get("key_frameids", [])]
+        if pcd_key_frameids:
+            try:
+                pcd_step = pcd_key_frameids.index(int(current_key_idx))
+            except ValueError as exc:
+                raise ValueError(
+                    f"Current key frame {current_key_idx} is not present in PCD key_frameids for "
+                    f"{taskvar}/{episode_key}: {pcd_key_frameids}"
+                ) from exc
+        else:
+            pcd_step = int(current_key_idx)
+        xyz_seq = episode["xyz"]
+        rgb_seq = episode.get("rgb")
+        if not isinstance(xyz_seq, list):
+            xyz_seq = np.asarray(xyz_seq).tolist()
+        if rgb_seq is not None and not isinstance(rgb_seq, list):
+            rgb_seq = np.asarray(rgb_seq).tolist()
+        action = np.asarray(episode["action"], dtype=np.float32)
+        if pcd_step >= len(xyz_seq) or pcd_step >= action.shape[0]:
+            raise ValueError(
+                f"PCD step out of range for {taskvar}/{episode_key}: step={pcd_step}, "
+                f"xyz_steps={len(xyz_seq)}, action_steps={action.shape[0]}"
+            )
+        arm_links_info = None
+        if self.policy_local_frame_config.rm_robot != "none":
+            bbox_info = episode.get("bbox_info")
+            pose_info = episode.get("pose_info")
+            if bbox_info is None or pose_info is None:
+                raise ValueError(f"PCD episode {taskvar}/{episode_key} lacks bbox_info/pose_info for robot filtering.")
+            arm_links_info = (
+                {key: np.asarray(value)[pcd_step] for key, value in bbox_info.items()},
+                {key: np.asarray(value)[pcd_step] for key, value in pose_info.items()},
+            )
+        frame = compute_policy_local_frame(
+            xyz=np.asarray(xyz_seq[pcd_step]),
+            rgb=None if rgb_seq is None else np.asarray(rgb_seq[pcd_step]),
+            ee_pose=action[pcd_step],
+            arm_links_info=arm_links_info,
+            config=self.policy_local_frame_config,
+            sample_seed=int(self.policy_local_frame_config.sample_seed) + int(row.get("row_id", 0)) * 1009 + int(pcd_step),
+            robot_3dlotus_root=self.robot_3dlotus_root,
+        )
+        frame["pcd_current_key_idx"] = int(pcd_key_frameids[pcd_step]) if pcd_key_frameids else int(current_key_idx)
+        frame["pcd_next_key_idx"] = (
+            int(pcd_key_frameids[pcd_step + 1])
+            if pcd_key_frameids and pcd_step + 1 < len(pcd_key_frameids)
+            else None
+        )
+        frame["pcd_next_action_world"] = (
+            action[pcd_step + 1].astype(np.float32)
+            if pcd_step + 1 < action.shape[0]
+            else action[pcd_step].astype(np.float32)
+        )
+        self._policy_local_frame_cache[cache_key] = frame
+        return frame
 
     def _build_key_transition_index(self) -> list[tuple[int, int, int, int]]:
         out: list[tuple[int, int, int, int]] = []

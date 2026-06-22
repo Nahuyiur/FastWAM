@@ -827,6 +827,9 @@ class GEMBenchOfficialRunner:
                         "action": _action_list(action),
                         "normalized_action": _action_list(output.get("normalized_action")),
                         "denormalized_action": _action_list(output.get("denormalized_action")),
+                        "model_denormalized_action": _action_list(output.get("model_denormalized_action")),
+                        "policy_target_frame": output.get("policy_target_frame"),
+                        "policy_local_frame": output.get("policy_local_frame"),
                         "normalization": output.get("normalization"),
                         "relation": output.get("relation"),
                         "num_inference_steps": output.get("num_inference_steps"),
@@ -889,6 +892,10 @@ class GEMBenchOfficialRunner:
                         action_chunk = np.asarray(output["action_chunk"], dtype=np.float32)
                         normalized_chunk = np.asarray(output["normalized_action_chunk"], dtype=np.float32)
                         denormalized_chunk = np.asarray(output["denormalized_action_chunk"], dtype=np.float32)
+                        model_denormalized_chunk = np.asarray(
+                            output.get("model_denormalized_action_chunk", denormalized_chunk),
+                            dtype=np.float32,
+                        )
                         if action_chunk.ndim != 2 or action_chunk.shape[-1] != 8:
                             raise ValueError(f"Chunk-replan requires action_chunk [T,8], got {action_chunk.shape}")
                         n_exec = min(
@@ -963,8 +970,11 @@ class GEMBenchOfficialRunner:
                                     "action": action_chunk[chunk_action_index],
                                     "normalized_action": normalized_chunk[chunk_action_index],
                                     "denormalized_action": denormalized_chunk[chunk_action_index],
+                                    "model_denormalized_action": model_denormalized_chunk[chunk_action_index],
                                     "instruction": output.get("instruction"),
                                     "relation": output.get("relation"),
+                                    "policy_target_frame": output.get("policy_target_frame"),
+                                    "policy_local_frame": output.get("policy_local_frame"),
                                     "normalization": output.get("normalization"),
                                     "num_inference_steps": output.get("num_inference_steps"),
                                     "chunk_horizon": int(action_chunk.shape[0]),
@@ -976,6 +986,9 @@ class GEMBenchOfficialRunner:
                                     "predicted_prefix_video_paths": predicted_prefix_paths_for_replan,
                                     "normalized_action_chunk": normalized_chunk if chunk_action_index == 0 else None,
                                     "denormalized_action_chunk": denormalized_chunk if chunk_action_index == 0 else None,
+                                    "model_denormalized_action_chunk": model_denormalized_chunk
+                                    if chunk_action_index == 0
+                                    else None,
                                 }
                             )
 
@@ -991,6 +1004,9 @@ class GEMBenchOfficialRunner:
                         "action": _action_list(action),
                         "normalized_action": _action_list(item.get("normalized_action")),
                         "denormalized_action": _action_list(item.get("denormalized_action")),
+                        "model_denormalized_action": _action_list(item.get("model_denormalized_action")),
+                        "policy_target_frame": item.get("policy_target_frame"),
+                        "policy_local_frame": item.get("policy_local_frame"),
                         "normalization": item.get("normalization"),
                         "relation": item.get("relation"),
                         "num_inference_steps": item.get("num_inference_steps"),
@@ -1010,6 +1026,10 @@ class GEMBenchOfficialRunner:
                         step_row["normalized_action_chunk"] = _action_list(item.get("normalized_action_chunk"))
                     if item.get("denormalized_action_chunk") is not None:
                         step_row["denormalized_action_chunk"] = _action_list(item.get("denormalized_action_chunk"))
+                    if item.get("model_denormalized_action_chunk") is not None:
+                        step_row["model_denormalized_action_chunk"] = _action_list(
+                            item.get("model_denormalized_action_chunk")
+                        )
                     try:
                         move_start = time.time()
                         obs, reward, terminate, _ = move(action, verbose=False)
