@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ from .common import (
 )
 
 
-DEFAULT_EVAL10_CONFIG = PROJECT_ROOT / "configs" / "eval" / "gembench_official_eval10_compositional_oa_seed200.yaml"
+DEFAULT_EVAL10_CONFIG = PROJECT_ROOT / "configs" / "eval" / "gembench_official_eval10_periodic_indomain_ood_seed200.yaml"
 CHUNK_REPLAN_PROTOCOL_ALIASES = {"chunk_replan", "fastwam_chunk_replan", "trace_chunk_replan"}
 
 
@@ -151,6 +152,20 @@ def _parse_cam_ids(value: str | None) -> tuple[int, ...]:
     return cam_ids
 
 
+def _explicit_cli_dests(parser: argparse.ArgumentParser, argv: list[str]) -> set[str]:
+    option_to_dest: dict[str, str] = {}
+    for action in parser._actions:
+        for option in action.option_strings:
+            option_to_dest[option] = action.dest
+    explicit: set[str] = set()
+    for token in argv:
+        option = token.split("=", 1)[0]
+        dest = option_to_dest.get(option)
+        if dest:
+            explicit.add(dest)
+    return explicit
+
+
 def _load_cfg_and_stats(run_dir: Path) -> tuple[Any, Path]:
     cfg_path = run_dir / "config.yaml"
     if not cfg_path.exists():
@@ -186,12 +201,50 @@ def _load_cfg_and_stats(run_dir: Path) -> tuple[Any, Path]:
     return cfg, stats_path
 
 
+def _nested_get(obj: Any, path: tuple[str, ...], default: Any = None) -> Any:
+    cur = obj
+    for key in path:
+        if cur is None:
+            return default
+        try:
+            if isinstance(cur, dict):
+                cur = cur[key]
+            else:
+                cur = getattr(cur, key)
+            continue
+        except (AttributeError, KeyError, TypeError):
+            pass
+        try:
+            cur = cur.get(key)
+        except Exception:
+            return default
+    return cur
+
+
+def _effective_chunk_action_horizon(args: argparse.Namespace, cfg: Any) -> int:
+    policy_horizon = _nested_get(cfg, ("policy_contract", "action_horizon"), None)
+    train_horizon = _nested_get(cfg, ("data", "train", "action_horizon"), 1)
+    aux_horizon = _nested_get(cfg, ("policy_contract", "policy_vgm_auxiliary_action_horizon"), None)
+    policy_horizon = int(policy_horizon) if policy_horizon is not None else int(train_horizon)
+    if str(args.eval_protocol) != "chunk_replan":
+        return int(policy_horizon)
+    if int(args.chunk_action_horizon) > 0:
+        return int(args.chunk_action_horizon)
+    if int(args.chunk_replan_steps) <= int(policy_horizon):
+        return int(policy_horizon)
+    candidates = [int(policy_horizon), int(train_horizon), int(args.chunk_replan_steps)]
+    if aux_horizon is not None:
+        candidates.append(int(aux_horizon))
+    return int(max(candidates))
+
+
 def _apply_eval10_config(args: argparse.Namespace) -> None:
     config_arg = getattr(args, "eval10_config", None)
     args.eval10_config_path = None
     args.eval10_config_payload = {}
     if not config_arg:
         return
+    explicit_args = set(getattr(args, "_explicit_args", set()))
     config_path = resolve_existing_path(config_arg, label="eval10_config", bases=[PROJECT_ROOT])
     config = _load_yaml_config(config_path)
     args.eval10_config_path = str(config_path)
@@ -224,12 +277,13 @@ def _apply_eval10_config(args: argparse.Namespace) -> None:
         "write_official_preds",
         "eval_protocol",
         "chunk_replan_steps",
+        "chunk_action_horizon",
         "chunk_predict_video",
     ):
-        if key in config:
+        if key in config and key not in explicit_args:
             setattr(args, key, _csv_from_config(config[key]) if key in csv_keys else config[key])
 
-    if "taskvars" in config:
+    if "taskvars" in config and "taskvars" not in explicit_args:
         args.taskvars = _csv_from_config(config["taskvars"])
 
     demos_per_taskvar = (
@@ -237,12 +291,12 @@ def _apply_eval10_config(args: argparse.Namespace) -> None:
         if "demos_per_taskvar" in config
         else config.get("num_demos_per_taskvar", config.get("num_demos"))
     )
-    if demos_per_taskvar is not None:
+    if demos_per_taskvar is not None and "num_demos" not in explicit_args:
         args.num_demos = int(demos_per_taskvar)
 
-    if "num_trials" in config:
+    if "num_trials" in config and "num_trials" not in explicit_args:
         args.num_trials = int(config["num_trials"])
-    elif demos_per_taskvar is not None and args.taskvars:
+    elif "num_trials" not in explicit_args and demos_per_taskvar is not None and args.taskvars:
         args.num_trials = len(_parse_csv(args.taskvars)) * int(args.num_demos)
 
 
@@ -575,6 +629,7 @@ def _dry_run_payload(
     *,
     mode: str,
     checkpoint: Path | None,
+    cfg: Any,
     stats_path: Path,
     output_root: Path,
     trials: list[Any],
@@ -616,6 +671,8 @@ def _dry_run_payload(
         "write_official_preds": bool(args.write_official_preds),
         "eval_protocol": str(args.eval_protocol),
         "chunk_replan_steps": int(args.chunk_replan_steps),
+        "chunk_action_horizon": int(args.chunk_action_horizon),
+        "effective_chunk_action_horizon": int(_effective_chunk_action_horizon(args, cfg)),
         "chunk_predict_video": bool(args.chunk_predict_video),
         **_official_scope_payload(args, eval10=(mode == "eval10")),
         "jobs": jobs,
@@ -737,6 +794,8 @@ def _write_eval10_markdown(output_root: Path, manifest: dict[str, Any]) -> None:
         f"Video mode: `{manifest.get('video_mode', 'none')}`",
         f"Eval protocol: `{manifest.get('eval_protocol', 'official_one_step')}`",
         f"Chunk replan steps: `{manifest.get('chunk_replan_steps', 1)}`",
+        f"Chunk action horizon: `{manifest.get('chunk_action_horizon', manifest.get('action_horizon', 1))}`",
+        f"Effective chunk action horizon: `{manifest.get('effective_chunk_action_horizon', manifest.get('chunk_action_horizon', manifest.get('action_horizon', 1)))}`",
         f"Chunk predicted video: `{manifest.get('chunk_predict_video', False)}`",
         f"Max simulator steps: `{manifest.get('max_steps')}`",
         f"Minimum visual rollout frames: `{manifest.get('min_video_frames', 0)}`",
@@ -807,12 +866,22 @@ def build_parser(*, eval10: bool) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--chunk-replan-steps", type=int, default=1)
+    parser.add_argument(
+        "--chunk-action-horizon",
+        type=int,
+        default=0,
+        help=(
+            "Diagnostic-only action horizon requested from the model in chunk_replan mode. "
+            "0 means auto: official_one_step preserves the checkpoint policy horizon, while "
+            "chunk_replan requests at least K actions and prefers the checkpoint train/aux horizon."
+        ),
+    )
     parser.add_argument("--chunk-predict-video", action="store_true", default=False)
     parser.add_argument("--no-chunk-predict-video", dest="chunk_predict_video", action="store_false")
-    parser.add_argument("--record-video", action="store_true", default=eval10)
+    parser.add_argument("--record-video", action="store_true", default=True)
     parser.add_argument("--no-record-video", dest="record_video", action="store_false")
-    parser.add_argument("--video-mode", choices=["observation", "official_recorder"], default="official_recorder" if eval10 else "observation")
-    parser.add_argument("--video-fps", type=int, default=30 if eval10 else 8)
+    parser.add_argument("--video-mode", choices=["observation", "official_recorder"], default="official_recorder")
+    parser.add_argument("--video-fps", type=int, default=30)
     parser.add_argument("--video-stride", type=int, default=1)
     parser.add_argument("--video-resolution", type=int, default=480)
     parser.add_argument("--video-include-robot-cameras", dest="video_include_robot_cameras", action="store_true", default=True)
@@ -820,7 +889,7 @@ def build_parser(*, eval10: bool) -> argparse.ArgumentParser:
     parser.add_argument("--video-rotate-cam", action="store_true")
     parser.add_argument("--video-recorder-required", dest="video_recorder_required", action="store_true", default=eval10)
     parser.add_argument("--video-recorder-optional", dest="video_recorder_required", action="store_false")
-    parser.add_argument("--video-initial-snap", dest="video_initial_snap", action="store_true", default=eval10)
+    parser.add_argument("--video-initial-snap", dest="video_initial_snap", action="store_true", default=True)
     parser.add_argument("--no-video-initial-snap", dest="video_initial_snap", action="store_false")
     parser.add_argument(
         "--min-video-frames",
@@ -841,10 +910,17 @@ def build_parser(*, eval10: bool) -> argparse.ArgumentParser:
 
 
 def run_cli(*, eval10: bool) -> int:
-    args = build_parser(eval10=eval10).parse_args()
+    parser = build_parser(eval10=eval10)
+    explicit_args = _explicit_cli_dests(parser, sys.argv[1:])
+    args = parser.parse_args()
+    args._explicit_args = explicit_args
     if eval10:
         _apply_eval10_config(args)
     args.eval_protocol = _normalize_eval_protocol(args.eval_protocol)
+    if str(args.eval_protocol) != "chunk_replan":
+        if "chunk_replan_steps" in explicit_args and int(args.chunk_replan_steps) != 1:
+            raise ValueError("--chunk-replan-steps > 1 is diagnostic-only and requires --eval-protocol chunk_replan.")
+        args.chunk_replan_steps = 1
     if eval10 and bool(args.write_official_preds):
         raise ValueError(
             "eval10 is a visual diagnostic and may not write official preds. "
@@ -860,8 +936,17 @@ def run_cli(*, eval10: bool) -> int:
             f"--eval-protocol {args.eval_protocol} is a diagnostic protocol and may not write official preds. "
             "Use --no-write-official-preds."
         )
+    if int(args.chunk_action_horizon) > 0:
+        if str(args.eval_protocol) != "chunk_replan":
+            raise ValueError("--chunk-action-horizon is diagnostic-only and requires --eval-protocol chunk_replan.")
+        if bool(args.write_official_preds):
+            raise ValueError("--chunk-action-horizon may not be used with --write-official-preds.")
+        if int(args.chunk_action_horizon) < int(args.chunk_replan_steps):
+            raise ValueError("--chunk-action-horizon must be >= --chunk-replan-steps.")
+    if str(args.eval_protocol) == "chunk_replan" and int(args.chunk_replan_steps) < 1:
+        raise ValueError("--chunk-replan-steps must be >= 1.")
     run_dir = Path(args.run_dir).expanduser().resolve()
-    _, stats_path = _load_cfg_and_stats(run_dir)
+    cfg, stats_path = _load_cfg_and_stats(run_dir)
     checkpoint = resolve_checkpoint(run_dir, args.checkpoint, dry_run=args.dry_run)
     output_root = _resolve_output_root(args, mode=("gembench_official_eval10" if eval10 else "gembench_official_success"), checkpoint=checkpoint)
     cam_ids = _parse_cam_ids(args.cam_ids)
@@ -881,6 +966,7 @@ def run_cli(*, eval10: bool) -> int:
             args,
             mode=("eval10" if eval10 else "success"),
             checkpoint=checkpoint,
+            cfg=cfg,
             stats_path=stats_path,
             output_root=output_root,
             trials=trials,
@@ -926,6 +1012,8 @@ def run_cli(*, eval10: bool) -> int:
             "write_official_preds": bool(args.write_official_preds),
             "eval_protocol": str(args.eval_protocol),
             "chunk_replan_steps": int(args.chunk_replan_steps),
+            "chunk_action_horizon": int(args.chunk_action_horizon),
+            "effective_chunk_action_horizon": int(_effective_chunk_action_horizon(args, cfg)),
             "chunk_predict_video": bool(args.chunk_predict_video),
             "trials": 0,
             "trial_split_counts": {},
@@ -962,6 +1050,10 @@ def run_cli(*, eval10: bool) -> int:
         rand_device=str(args.rand_device),
         model_seed=int(args.model_seed),
         tiled=bool(args.tiled),
+        chunk_action_horizon=int(args.chunk_action_horizon) if int(args.chunk_action_horizon) > 0 else None,
+        min_chunk_action_horizon=(
+            int(args.chunk_replan_steps) if str(args.eval_protocol) == "chunk_replan" else None
+        ),
     )
     runner = GEMBenchOfficialRunner(
         actioner=actioner,
@@ -988,6 +1080,7 @@ def run_cli(*, eval10: bool) -> int:
         chunk_predict_video=bool(args.chunk_predict_video),
     )
     summary = runner.run(trials=trials, skipped_taskvars=skipped)
+    summary["effective_chunk_action_horizon"] = int(getattr(actioner, "chunk_action_horizon", actioner.action_horizon))
     scope_payload = _official_scope_payload(args, eval10=eval10)
     summary.update(scope_payload)
     summary.update(

@@ -403,6 +403,7 @@ class GEMBenchOfficialRunner:
             "relation_mode": str(self.actioner.relation_mode),
             "has_relation_expert": bool(self.actioner.has_relation),
             "action_horizon": int(self.actioner.action_horizon),
+            "chunk_action_horizon": int(getattr(self.actioner, "chunk_action_horizon", self.actioner.action_horizon)),
             "training_action_horizon": int(getattr(self.actioner, "training_action_horizon", self.actioner.action_horizon)),
             "executed_action_index": int(getattr(self.actioner, "executed_action_index", 0)),
             "policy_vgm_auxiliary_action_horizon": getattr(self.actioner, "policy_vgm_auxiliary_action_horizon", None),
@@ -428,11 +429,19 @@ class GEMBenchOfficialRunner:
             "chunk_predict_video": self.chunk_predict_video,
             "chunk_replan_contract": {
                 "predicts_action_chunk": True,
+                "requested_chunk_action_horizon": int(
+                    getattr(self.actioner, "chunk_action_horizon", self.actioner.action_horizon)
+                ),
                 "executes_first_k_actions": int(self.chunk_replan_steps),
                 "reward_check_each_action": True,
                 "stop_on_success": True,
                 "reobserve_after_k_actions": self.eval_protocol == "chunk_replan",
-                "official_style_equivalent": self.eval_protocol == "chunk_replan" and int(self.chunk_replan_steps) == 1,
+                "official_style_equivalent": (
+                    self.eval_protocol == "chunk_replan"
+                    and int(self.chunk_replan_steps) == 1
+                    and int(getattr(self.actioner, "chunk_action_horizon", self.actioner.action_horizon))
+                    == int(self.actioner.action_horizon)
+                ),
             },
             "camera_names": [OFFICIAL_CAMERA_NAMES[idx] for idx in self.cam_ids],
             "trials": [asdict(trial) for trial in trials],
@@ -486,6 +495,7 @@ class GEMBenchOfficialRunner:
             "relation_mode": str(self.actioner.relation_mode),
             "has_relation_expert": bool(self.actioner.has_relation),
             "action_horizon": int(self.actioner.action_horizon),
+            "chunk_action_horizon": int(getattr(self.actioner, "chunk_action_horizon", self.actioner.action_horizon)),
             "training_action_horizon": int(getattr(self.actioner, "training_action_horizon", self.actioner.action_horizon)),
             "executed_action_index": int(getattr(self.actioner, "executed_action_index", 0)),
             "policy_vgm_auxiliary_action_horizon": getattr(self.actioner, "policy_vgm_auxiliary_action_horizon", None),
@@ -513,11 +523,19 @@ class GEMBenchOfficialRunner:
             "chunk_predict_video": self.chunk_predict_video,
             "chunk_replan_contract": {
                 "predicts_action_chunk": True,
+                "requested_chunk_action_horizon": int(
+                    getattr(self.actioner, "chunk_action_horizon", self.actioner.action_horizon)
+                ),
                 "executes_first_k_actions": int(self.chunk_replan_steps),
                 "reward_check_each_action": True,
                 "stop_on_success": True,
                 "reobserve_after_k_actions": self.eval_protocol == "chunk_replan",
-                "official_style_equivalent": self.eval_protocol == "chunk_replan" and int(self.chunk_replan_steps) == 1,
+                "official_style_equivalent": (
+                    self.eval_protocol == "chunk_replan"
+                    and int(self.chunk_replan_steps) == 1
+                    and int(getattr(self.actioner, "chunk_action_horizon", self.actioner.action_horizon))
+                    == int(self.actioner.action_horizon)
+                ),
             },
             "chunk_replan_total_replans": int(len(chunk_records)),
             "chunk_replan_total_executed_actions": int(chunk_replan_executed_actions),
@@ -931,6 +949,7 @@ class GEMBenchOfficialRunner:
                                 "start_step_id": int(step_id),
                                 "selected_chunk_indices": selected_indices,
                                 "chunk_horizon": int(action_chunk.shape[0]),
+                                "chunk_action_horizon": int(output.get("chunk_action_horizon", action_chunk.shape[0])),
                                 "replan_steps": int(n_exec),
                                 "num_video_frames": output.get("num_video_frames"),
                                 "action_video_freq_ratio": output.get("action_video_freq_ratio"),
@@ -949,6 +968,7 @@ class GEMBenchOfficialRunner:
                                     "normalization": output.get("normalization"),
                                     "num_inference_steps": output.get("num_inference_steps"),
                                     "chunk_horizon": int(action_chunk.shape[0]),
+                                    "chunk_action_horizon": int(output.get("chunk_action_horizon", action_chunk.shape[0])),
                                     "replan_id": int(replan_id),
                                     "chunk_action_index": int(chunk_action_index),
                                     "selected_chunk_indices": selected_indices,
@@ -981,6 +1001,7 @@ class GEMBenchOfficialRunner:
                         "chunk_action_index": int(item.get("chunk_action_index")),
                         "selected_chunk_indices": item.get("selected_chunk_indices"),
                         "chunk_horizon": int(item.get("chunk_horizon")),
+                        "chunk_action_horizon": int(item.get("chunk_action_horizon", item.get("chunk_horizon"))),
                         "chunk_replan_steps": int(self.chunk_replan_steps),
                         "predicted_full_video_paths": item.get("predicted_full_video_paths"),
                         "predicted_prefix_video_paths": item.get("predicted_prefix_video_paths"),
@@ -1172,6 +1193,7 @@ class GEMBenchOfficialRunner:
             "official_full_score": False,
             "write_official_preds": bool(self.write_official_preds),
             "chunk_replan_steps": int(self.chunk_replan_steps),
+            "chunk_action_horizon": int(getattr(self.actioner, "chunk_action_horizon", self.actioner.action_horizon)),
             "chunk_predict_video": bool(self.chunk_predict_video),
             "reward_check_each_action": True,
             "stop_on_success": True,

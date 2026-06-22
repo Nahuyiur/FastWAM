@@ -25,6 +25,9 @@ from .common import OFFICIAL_CAMERA_NAMES, PROJECT_ROOT, resolve_existing_path
 class GEMBenchOfficialActioner:
     """FastWAM adapter for the official GEMBench single-action contract."""
 
+    OFFICIAL_RLBENCH_TABLE_HEIGHT = 0.7505
+    OFFICIAL_RLBENCH_MIN_ACTION_Z_MARGIN = 0.005
+
     def __init__(
         self,
         *,
@@ -39,6 +42,8 @@ class GEMBenchOfficialActioner:
         rand_device: str = "cpu",
         model_seed: int = -1,
         tiled: bool = False,
+        chunk_action_horizon: int | None = None,
+        min_chunk_action_horizon: int | None = None,
     ):
         register_default_resolvers()
         self.cfg = cfg
@@ -64,6 +69,21 @@ class GEMBenchOfficialActioner:
             int(contract_action_horizon) if contract_action_horizon is not None else self.training_action_horizon
         )
         self.policy_vgm_auxiliary_action_horizon = self.policy_contract.get("policy_vgm_auxiliary_action_horizon")
+        auto_chunk_candidates = [int(self.action_horizon), int(self.training_action_horizon)]
+        if self.policy_vgm_auxiliary_action_horizon is not None:
+            auto_chunk_candidates.append(int(self.policy_vgm_auxiliary_action_horizon))
+        if min_chunk_action_horizon is not None and int(min_chunk_action_horizon) > 0:
+            auto_chunk_candidates.append(int(min_chunk_action_horizon))
+        self.chunk_action_horizon = (
+            int(chunk_action_horizon)
+            if chunk_action_horizon is not None and int(chunk_action_horizon) > 0
+            else (
+                max(auto_chunk_candidates)
+                if min_chunk_action_horizon is not None
+                and int(min_chunk_action_horizon) > int(self.action_horizon)
+                else int(self.action_horizon)
+            )
+        )
         self.executed_action_index = 0
         self.video_size = [int(v) for v in data_train.get("video_size", [224, 672])]
         self.camera_order = [str(v) for v in data_train.get("camera_order", ["front", "wrist", "left_shoulder"])]
@@ -73,6 +93,7 @@ class GEMBenchOfficialActioner:
             len(frame_offsets) if frame_offsets is not None else int(data_train.get("num_video_frames", 9))
         )
         self.action_video_freq_ratio = int(data_train.get("action_video_freq_ratio", 4))
+        self.min_action_z = self.OFFICIAL_RLBENCH_TABLE_HEIGHT + self.OFFICIAL_RLBENCH_MIN_ACTION_Z_MARGIN
 
         self.processor = self._build_processor(data_train)
         self.model = self._load_model()
@@ -101,6 +122,8 @@ class GEMBenchOfficialActioner:
         rand_device: str = "cpu",
         model_seed: int = -1,
         tiled: bool = False,
+        chunk_action_horizon: int | None = None,
+        min_chunk_action_horizon: int | None = None,
     ) -> "GEMBenchOfficialActioner":
         run_dir = Path(run_dir).resolve()
         cfg_path = run_dir / "config.yaml"
@@ -120,6 +143,8 @@ class GEMBenchOfficialActioner:
             rand_device=rand_device,
             model_seed=model_seed,
             tiled=tiled,
+            chunk_action_horizon=chunk_action_horizon,
+            min_chunk_action_horizon=min_chunk_action_horizon,
         )
 
     def _build_processor(self, data_train: DictConfig) -> GEMBenchProcessorShim:
@@ -213,9 +238,9 @@ class GEMBenchOfficialActioner:
         out = batch["action"]["default"][0].numpy().astype(np.float32)
         return out
 
-    @staticmethod
-    def _postprocess_action(action: np.ndarray) -> np.ndarray:
+    def _postprocess_action(self, action: np.ndarray) -> np.ndarray:
         out = np.asarray(action, dtype=np.float32).copy()
+        out[2] = max(float(out[2]), float(self.min_action_z))
         quat = out[3:7]
         norm = float(np.linalg.norm(quat))
         if np.isfinite(norm) and norm > 1.0e-6:
@@ -258,10 +283,11 @@ class GEMBenchOfficialActioner:
         relation_summary = {"mode": "none", "valid_edges": None}
 
         seed = self._prediction_seed(taskvar=taskvar, episode_id=episode_id, step_id=step_id)
+        requested_action_horizon = int(self.chunk_action_horizon)
         infer_kwargs = {
             "prompt": DEFAULT_PROMPT.format(task=instruction),
             "input_image": image,
-            "action_horizon": self.action_horizon,
+            "action_horizon": requested_action_horizon,
             "proprio": proprio,
             "negative_prompt": "",
             "text_cfg_scale": 1.0,
@@ -300,12 +326,13 @@ class GEMBenchOfficialActioner:
         denormalized_action = self._denormalize_action_chunk(normalized_action)
         if denormalized_action.ndim != 2 or denormalized_action.shape[-1] != 8 or denormalized_action.shape[0] < 1:
             raise ValueError(f"Denormalized action chunk must be non-empty [T,8], got {denormalized_action.shape}")
-        if int(denormalized_action.shape[0]) != int(self.action_horizon):
+        if int(denormalized_action.shape[0]) != int(requested_action_horizon):
             raise ValueError(
                 f"Predicted action chunk horizon={denormalized_action.shape[0]} does not match "
-                f"configured action_horizon={self.action_horizon}."
+                f"requested chunk_action_horizon={requested_action_horizon}."
             )
         executed_chunk = np.stack([self._postprocess_action(action) for action in denormalized_action], axis=0)
+        z_delta = executed_chunk[:, 2] - denormalized_action[:, 2]
         denorm_delta = denormalized_action - normalized_chunk
         return {
             "action_chunk": executed_chunk.astype(np.float32),
@@ -315,6 +342,7 @@ class GEMBenchOfficialActioner:
             "step_id": int(step_id),
             "relation": relation_summary,
             "chunk_horizon": int(denormalized_action.shape[0]),
+            "chunk_action_horizon": int(requested_action_horizon),
             "policy_action_horizon": int(self.action_horizon),
             "training_action_horizon": int(self.training_action_horizon),
             "policy_vgm_auxiliary_action_horizon": (
@@ -330,6 +358,12 @@ class GEMBenchOfficialActioner:
                 "normalized_max": float(np.max(normalized_chunk)),
                 "denormalized_min": float(np.min(denormalized_action)),
                 "denormalized_max": float(np.max(denormalized_action)),
+            },
+            "postprocess": {
+                "table_height": float(self.OFFICIAL_RLBENCH_TABLE_HEIGHT),
+                "min_action_z": float(self.min_action_z),
+                "z_clamped_count": int(np.count_nonzero(z_delta > 0.0)),
+                "max_z_clamp_delta": float(np.max(z_delta)) if z_delta.size else 0.0,
             },
             "num_inference_steps": self.num_inference_steps,
             "num_video_frames": self.num_video_frames,
@@ -373,11 +407,13 @@ class GEMBenchOfficialActioner:
             "step_id": int(step_id),
             "relation": output["relation"],
             "chunk_horizon": int(output["chunk_horizon"]),
+            "chunk_action_horizon": int(output["chunk_action_horizon"]),
             "executed_action_index": executed_index,
             "policy_action_horizon": int(output["policy_action_horizon"]),
             "training_action_horizon": int(output["training_action_horizon"]),
             "policy_vgm_auxiliary_action_horizon": output["policy_vgm_auxiliary_action_horizon"],
             "normalization": output["normalization"],
+            "postprocess": output["postprocess"],
             "num_inference_steps": output["num_inference_steps"],
             "num_video_frames": output["num_video_frames"],
             "action_video_freq_ratio": output["action_video_freq_ratio"],

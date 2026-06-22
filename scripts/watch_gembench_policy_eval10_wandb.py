@@ -295,6 +295,8 @@ def _run_eval10(args: argparse.Namespace, *, step: int, checkpoint: Path) -> tup
         args.device,
         "--no-write-official-preds",
     ]
+    if int(args.chunk_action_horizon) > 0:
+        cmd.extend(["--chunk-action-horizon", str(args.chunk_action_horizon)])
     if args.chunk_predict_video:
         cmd.append("--chunk-predict-video")
     if args.dry_run_eval:
@@ -391,6 +393,7 @@ def _wandb_init(args: argparse.Namespace):
             "relation_mode": args.relation_mode,
             "eval_protocol": eval_protocol,
             "chunk_replan_steps": int(args.chunk_replan_steps),
+            "chunk_action_horizon_arg": int(args.chunk_action_horizon),
             "chunk_predict_video": bool(args.chunk_predict_video),
             "wandb_metric_prefix": metric_prefix,
             "wandb_log_mode": args.wandb_mode,
@@ -425,6 +428,12 @@ def _wandb_log_eval10(wandb: Any, args: argparse.Namespace, *, step: int, output
         "eval10_periodic/write_official_preds": bool(summary.get("write_official_preds", False)),
         "eval10_periodic/eval_protocol": str(summary.get("eval_protocol") or args.eval_protocol),
         "eval10_periodic/chunk_replan_steps": int(summary.get("chunk_replan_steps") or args.chunk_replan_steps),
+        "eval10_periodic/chunk_action_horizon": int(summary.get("chunk_action_horizon") or args.chunk_action_horizon),
+        "eval10_periodic/effective_chunk_action_horizon": int(
+            summary.get("effective_chunk_action_horizon")
+            or summary.get("chunk_action_horizon")
+            or args.chunk_action_horizon
+        ),
         "eval10_periodic/chunk_predict_video": bool(summary.get("chunk_predict_video", args.chunk_predict_video)),
         "eval10_periodic/video_mode": str(summary.get("video_mode") or ""),
         "eval10_periodic/relation_mode": str(summary.get("relation_mode") or args.relation_mode),
@@ -542,6 +551,7 @@ def main() -> int:
         default="chunk_replan",
     )
     parser.add_argument("--chunk-replan-steps", type=int, default=1)
+    parser.add_argument("--chunk-action-horizon", type=int, default=0)
     parser.add_argument("--chunk-predict-video", action="store_true")
     parser.add_argument("--num-inference-steps", type=int, default=10)
     parser.add_argument("--video-fps", type=int, default=30)
@@ -591,6 +601,7 @@ def main() -> int:
             state["interval_steps"] = int(args.interval_steps)
             state["eval_protocol"] = _normalize_eval_protocol(args.eval_protocol)
             state["chunk_replan_steps"] = int(args.chunk_replan_steps)
+            state["chunk_action_horizon"] = int(args.chunk_action_horizon)
             state["chunk_predict_video"] = bool(args.chunk_predict_video)
             _write_json(state_path, state)
             for step, checkpoint in candidates:

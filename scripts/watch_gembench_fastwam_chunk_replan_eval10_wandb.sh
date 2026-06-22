@@ -18,6 +18,10 @@ RUN_ID="${FASTWAM_RUN_ID:-$(basename "${RUN_DIR}")}"
 INTERVAL_STEPS="${INTERVAL_STEPS:-2000}"
 CHUNK_REPLAN_STEPS="${CHUNK_REPLAN_STEPS:-8}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+EXTRA_CHUNK_ARGS=()
+if [[ -n "${CHUNK_ACTION_HORIZON:-}" ]]; then
+  EXTRA_CHUNK_ARGS=(--chunk-action-horizon "${CHUNK_ACTION_HORIZON}")
+fi
 
 export CUDA_VISIBLE_DEVICES
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
@@ -37,6 +41,7 @@ python scripts/watch_gembench_policy_eval10_wandb.py \
   --relation-mode none \
   --eval-protocol chunk_replan \
   --chunk-replan-steps "${CHUNK_REPLAN_STEPS}" \
+  "${EXTRA_CHUNK_ARGS[@]}" \
   --chunk-predict-video \
   --device "${DEVICE:-cuda:0}" \
   --cuda-visible-devices "${CUDA_VISIBLE_DEVICES}" \
