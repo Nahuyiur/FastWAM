@@ -257,6 +257,24 @@ def main() -> int:
         default="cached_context_infer_action,prompt_infer_action",
         help="Comma-separated variants: cached_context_infer_action,prompt_infer_action,cached_context_infer_joint",
     )
+    parser.add_argument(
+        "--rgb-cache-dir-override",
+        default=None,
+        help="Temporarily override data.{train,val}.rgb_cache_dir from the run config for A/B diagnostics.",
+    )
+    parser.add_argument(
+        "--vae-latent-cache-dir-override",
+        default=None,
+        help=(
+            "Temporarily override data.{train,val}.vae_latent_cache_dir. "
+            "Use 'none' to disable stale VAE cache references."
+        ),
+    )
+    parser.add_argument(
+        "--allow-partial-cache-override",
+        action="store_true",
+        help="Set dataset allow_partial_cache=true for diagnostics against a small rendered cache subset.",
+    )
     parser.add_argument("--output-root", default=None)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -267,6 +285,15 @@ def main() -> int:
     dataset_cfg = cfg.data.get(str(args.dataset_key))
     if dataset_cfg is None:
         raise ValueError(f"config.yaml has no data.{args.dataset_key}")
+    if args.rgb_cache_dir_override:
+        dataset_cfg.rgb_cache_dir = str(Path(args.rgb_cache_dir_override).expanduser().resolve())
+    if args.vae_latent_cache_dir_override:
+        value = str(args.vae_latent_cache_dir_override)
+        dataset_cfg.vae_latent_cache_dir = None if value.lower() in {"none", "null", ""} else str(
+            Path(value).expanduser().resolve()
+        )
+    if args.allow_partial_cache_override:
+        dataset_cfg.allow_partial_cache = True
     dataset = instantiate(dataset_cfg)
     end = min(len(dataset), int(args.sample_offset) + int(args.max_samples))
     sample_indices = list(range(int(args.sample_offset), end))
@@ -293,6 +320,19 @@ def main() -> int:
         "variants": variants,
         "num_inference_steps": int(args.num_inference_steps),
         "model_seed": int(args.model_seed),
+        "overrides": {
+            "rgb_cache_dir": str(Path(args.rgb_cache_dir_override).expanduser().resolve())
+            if args.rgb_cache_dir_override
+            else None,
+            "vae_latent_cache_dir": None
+            if str(args.vae_latent_cache_dir_override).lower() in {"none", "null", ""}
+            else (
+                str(Path(args.vae_latent_cache_dir_override).expanduser().resolve())
+                if args.vae_latent_cache_dir_override
+                else None
+            ),
+            "allow_partial_cache": bool(args.allow_partial_cache_override),
+        },
         "note": (
             "This diagnostic uses cached dataset RGB/proprio/context instead of RLBench live observations. "
             "It is not an official GEMBench score."
