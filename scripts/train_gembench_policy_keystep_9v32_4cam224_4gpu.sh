@@ -27,6 +27,7 @@ export GEMBENCH_9V32_4CAM_VAE_CACHE_DIR="${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR:-${G
 export GEMBENCH_KEYSTEPS_BBOX_DIR="${GEMBENCH_KEYSTEPS_BBOX_DIR:-${GEMBENCH_ROOT}/train_dataset/keysteps_bbox/seed0}"
 export GEMBENCH_KEYSTEPS_BBOX_PCD_DIR="${GEMBENCH_KEYSTEPS_BBOX_PCD_DIR:-${GEMBENCH_ROOT}/train_dataset/keysteps_bbox_pcd/seed0/voxel1cm}"
 export GEMBENCH_KEY_FRAMEIDS_CACHE="${GEMBENCH_KEY_FRAMEIDS_CACHE:-${GEMBENCH_ROOT}/fastwam_cache/microsteps_9v32_seed0_key_frameids.json}"
+export GEMBENCH_POLICY_KEYSTEP_NORM_STATS="${GEMBENCH_POLICY_KEYSTEP_NORM_STATS:-${FASTWAM_ROOT}/data/gembench_policy_keystep_9v32_4cam224_stats.json}"
 export GEMBENCH_9V32_MANIFEST="${GEMBENCH_9V32_4CAM_MANIFEST}"
 export GEMBENCH_9V32_RGB_CACHE_DIR="${GEMBENCH_9V32_4CAM_RGB_CACHE_DIR}"
 export GEMBENCH_9V32_VAE_CACHE_DIR="${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR}"
@@ -109,6 +110,45 @@ if len(entries) < len(demos):
     raise SystemExit(f"key-frame sidecar only covers {len(entries)}/{len(demos)} demos: {sidecar_path}")
 PY
 
+POLICY_STATS_ARGS=()
+if [[ -n "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_POLICY_TARGET_FRAME:-}" ]]; then
+  POLICY_STATS_ARGS+=(--policy-target-frame "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_POLICY_TARGET_FRAME}")
+fi
+if [[ -n "${GEMBENCH_POLICY_KEYSTEP_STATS_TASKVARS:-}" ]]; then
+  POLICY_STATS_ARGS+=(--taskvars "${GEMBENCH_POLICY_KEYSTEP_STATS_TASKVARS}")
+fi
+if [[ -n "${GEMBENCH_POLICY_KEYSTEP_STATS_MAX_INDEX_DEMOS:-}" ]]; then
+  POLICY_STATS_ARGS+=(--policy-max-index-demos "${GEMBENCH_POLICY_KEYSTEP_STATS_MAX_INDEX_DEMOS}")
+fi
+if [[ -n "${GEMBENCH_POLICY_KEYSTEP_STATS_MAX_SAMPLES:-}" ]]; then
+  POLICY_STATS_ARGS+=(--max-samples "${GEMBENCH_POLICY_KEYSTEP_STATS_MAX_SAMPLES}")
+fi
+if [[ "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_POLICY_TARGET_FRAME:-}" == "official_pcd_local" ]]; then
+  POLICY_STATS_ARGS+=(
+    --policy-pcd-data-dir "${GEMBENCH_KEYSTEPS_BBOX_PCD_DIR}"
+    --policy-local-xyz-shift "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_LOCAL_XYZ_SHIFT:-center}"
+    --policy-local-rm-robot "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_LOCAL_RM_ROBOT:-none}"
+    --policy-local-num-points "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_LOCAL_NUM_POINTS:-0}"
+    --policy-local-train-voxel-size "${FASTWAM_GEMBENCH_POLICY_KEYSTEP_LOCAL_TRAIN_VOXEL_SIZE:-0.0}"
+    --robot-3dlotus-root "${ROBOT_3DLOTUS_ROOT:-/mnt/yuhan/gembench_sim/robot-3dlotus}"
+  )
+fi
+if [[ "${PRECOMPUTE_GEMBENCH_POLICY_KEYSTEP_STATS:-1}" == "1" && ! -f "${GEMBENCH_POLICY_KEYSTEP_NORM_STATS}" ]]; then
+  echo "[gembench-policy-keystep-train] computing key-step policy norm stats: ${GEMBENCH_POLICY_KEYSTEP_NORM_STATS}"
+  PYTHONPATH=src "${PYTHON_BIN}" scripts/precompute_gembench_policy_keystep_norm_stats.py \
+    --manifest "${GEMBENCH_9V32_4CAM_MANIFEST}" \
+    --rgb-cache-dir "${GEMBENCH_9V32_4CAM_RGB_CACHE_DIR}" \
+    --keysteps-dir "${GEMBENCH_KEYSTEPS_BBOX_DIR}" \
+    --key-frameids-path "${GEMBENCH_KEY_FRAMEIDS_CACHE}" \
+    --output "${GEMBENCH_POLICY_KEYSTEP_NORM_STATS}" \
+    "${POLICY_STATS_ARGS[@]}"
+fi
+if [[ ! -f "${GEMBENCH_POLICY_KEYSTEP_NORM_STATS}" ]]; then
+  echo "[gembench-policy-keystep-train] missing key-step policy norm stats: ${GEMBENCH_POLICY_KEYSTEP_NORM_STATS}" >&2
+  echo "[gembench-policy-keystep-train] run scripts/precompute_gembench_policy_keystep_norm_stats.py or set GEMBENCH_POLICY_KEYSTEP_NORM_STATS" >&2
+  exit 1
+fi
+
 CACHE_DIR="${GEMBENCH_TEXT_EMBED_CACHE:-data/text_embeds_cache/gembench_microsteps_9v32}"
 TEXT_ENCODER_ID="${GEMBENCH_TEXT_ENCODER_ID:-wan22ti2v5b}"
 export DIFFSYNTH_DOWNLOAD_SOURCE="${DIFFSYNTH_DOWNLOAD_SOURCE:-huggingface}"
@@ -183,7 +223,8 @@ PYTHONPATH=src "${PYTHON_BIN}" scripts/audit_gembench_policy_keystep_9v32_contra
   --vae-latent-cache-dir "${GEMBENCH_9V32_4CAM_VAE_CACHE_DIR}" \
   --text-embedding-cache-dir "${CACHE_DIR}" \
   --text-encoder-id "${TEXT_ENCODER_ID}" \
-  --pretrained-norm-stats ./data/gembench_microsteps_9v32_dataset_stats.json \
+  --pretrained-norm-stats "${GEMBENCH_POLICY_KEYSTEP_NORM_STATS}" \
+  --norm-default-mode min/max \
   --output-json "${AUDIT_DIR}/policy_keystep_9v32_4cam224_contract.json" \
   --output-md "${AUDIT_DIR}/policy_keystep_9v32_4cam224_contract.md" \
   "${POLICY_AUDIT_ARGS[@]}"

@@ -21,8 +21,8 @@ train:
   cache_text_embeddings: true
   cache_gripper_arrays: true
   allow_missing_text_embeds: false
-  pretrained_norm_stats: ./data/gembench_microsteps_9v32_dataset_stats.json
-  norm_default_mode: "-2.0/2.0"
+  pretrained_norm_stats: ${oc.env:GEMBENCH_POLICY_KEYSTEP_NORM_STATS,./data/gembench_policy_keystep_9v32_4cam224_stats.json}
+  norm_default_mode: min/max
   stats_scan_limit: 0
   allow_partial_cache: false
   policy_include_final_key: false
@@ -54,8 +54,8 @@ val:
   cache_text_embeddings: true
   cache_gripper_arrays: true
   allow_missing_text_embeds: false
-  pretrained_norm_stats: ./data/gembench_microsteps_9v32_dataset_stats.json
-  norm_default_mode: "-2.0/2.0"
+  pretrained_norm_stats: ${oc.env:GEMBENCH_POLICY_KEYSTEP_NORM_STATS,./data/gembench_policy_keystep_9v32_4cam224_stats.json}
+  norm_default_mode: min/max
   stats_scan_limit: 0
   allow_partial_cache: false
   policy_include_final_key: false
