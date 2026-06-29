@@ -1,0 +1,85 @@
+{
+  "id_pretrain_online": {
+    "split": "pretrain",
+    "num_trials": 10,
+    "tasks": [
+      "OpenBlenderLid",
+      "OpenCabinet",
+      "OpenDishwasher",
+      "OpenDrawer",
+      "OpenElectricKettleLid",
+      "OpenFridge",
+      "OpenFridgeDrawer",
+      "OpenMicrowave",
+      "OpenOven",
+      "OpenToasterOvenDoor",
+      "CloseCabinet",
+      "CloseDishwasher",
+      "CloseDrawer",
+      "CloseElectricKettleLid",
+      "CloseFridgeDrawer",
+      "CloseMicrowave",
+      "CloseOven",
+      "CloseStandMixerHead",
+      "PickPlaceCabinetToCounter",
+      "PickPlaceCounterToBlender",
+      "PickPlaceCounterToDrawer",
+      "PickPlaceCounterToMicrowave",
+      "PickPlaceCounterToOven",
+      "PickPlaceCounterToSink",
+      "PickPlaceCounterToStandMixer",
+      "PickPlaceCounterToToasterOven",
+      "PickPlaceFridgeDrawerToShelf",
+      "PickPlaceFridgeShelfToDrawer",
+      "PickPlaceMicrowaveToCounter",
+      "PickPlaceStoveToCounter",
+      "PickPlaceToasterOvenToCounter",
+      "TurnOffMicrowave",
+      "TurnOffSinkFaucet",
+      "TurnOnBlender",
+      "TurnOnElectricKettle",
+      "TurnOnSinkFaucet",
+      "TurnOnStove",
+      "TurnOnToaster",
+      "TurnOnToasterOven",
+      "SlideOvenRack",
+      "SlideToasterOvenRack",
+      "AdjustWaterTemperature",
+      "AdjustToasterOvenTemperature"
+    ]
+  },
+  "target_id_sanity": {
+    "split": "target",
+    "num_trials": 25,
+    "tasks": [
+      "OpenCabinet",
+      "OpenDrawer",
+      "TurnOnElectricKettle",
+      "TurnOnSinkFaucet"
+    ]
+  },
+  "ood_pair_strict": {
+    "split": "target",
+    "num_trials": 50,
+    "tasks": [
+      "CloseBlenderLid",
+      "CloseFridge",
+      "CloseToasterOvenDoor",
+      "OpenStandMixerHead",
+      "PickPlaceCounterToCabinet",
+      "PickPlaceCounterToStove",
+      "PickPlaceDrawerToCounter",
+      "PickPlaceSinkToCounter",
+      "TurnOffStove",
+      "TurnOnMicrowave"
+    ]
+  },
+  "ood_pair_probe": {
+    "split": "target",
+    "num_trials": 25,
+    "tasks": [
+      "PickPlaceToasterToCounter",
+      "SlideDishwasherRack"
+    ]
+  }
+}
