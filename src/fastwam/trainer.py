@@ -956,7 +956,11 @@ class Wan22Trainer:
                 raise ValueError("Eval sample must contain `proprio` for action denormalization.")
             proprio_full = sample["proprio"].detach().to(device="cpu", dtype=torch.float32)
 
-            processor = self.val_dataset.lerobot_dataset.processor
+            processor = getattr(self.val_dataset, "processor", None)
+            if processor is None and hasattr(self.val_dataset, "lerobot_dataset"):
+                processor = getattr(self.val_dataset.lerobot_dataset, "processor", None)
+            if processor is None:
+                raise ValueError("Eval action metrics require a val dataset processor for action denormalization.")
 
             denorm_actions = {}
             action_meta = processor.shape_meta["action"]
