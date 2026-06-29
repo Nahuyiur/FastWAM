@@ -16,7 +16,9 @@ num_epochs: 5
 max_steps: 50000
 log_every: 20
 save_every: 5000
-eval_every: 2000
+# RoboCasa official metrics are produced by scripts/robocasa_acg_eval.py.
+# The trainer's offline video/GT eval path is not the official RoboCasa rollout eval.
+eval_every: 0
 eval_num_inference_steps: 10
 
 # 1 sample/rank * 8 ranks * 4 accumulation = effective batch 32.
