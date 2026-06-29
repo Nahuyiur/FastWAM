@@ -869,17 +869,19 @@ class Wan22Trainer:
                     f"`context/context_mask` must be [B,L,D]/[B,L], got {tuple(context.shape)} and {tuple(context_mask.shape)}"
                 )
 
-        return {
+        result = {
             "video": video,
             "prompt": prompt,
             "action": action,
-            "policy_action": policy_action,
             "proprio": proprio,
             "context": context,
             "context_mask": context_mask,
             "action_horizon": action_horizon,
             "metadata": metadata,
         }
+        if policy_action is not None:
+            result["policy_action"] = policy_action
+        return result
 
     @torch.no_grad()
     def evaluate(self):

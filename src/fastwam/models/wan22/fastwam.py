@@ -360,7 +360,7 @@ class FastWAM(torch.nn.Module):
                     f"got {tuple(video_action_is_pad.shape)} vs expected ({batch_size}, {video_action_horizon})"
                 )
 
-        uses_policy_action = "policy_action" in sample
+        uses_policy_action = sample.get("policy_action", None) is not None
         action = sample["policy_action"] if uses_policy_action else video_action
         action_field_name = "policy_action" if uses_policy_action else "action"
         if action.ndim != 3:
