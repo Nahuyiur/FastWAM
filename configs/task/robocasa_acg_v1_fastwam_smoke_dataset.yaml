@@ -1,0 +1,24 @@
+# @package _global_
+
+defaults:
+  - override /data: robocasa_acg_v1_2cam224_train
+  - override /model: fastwam_joint
+  - _self_
+
+batch_size: 1
+num_workers: 0
+max_steps: 1
+
+data:
+  train:
+    max_episodes: 4
+    max_windows_per_episode: 2
+    allow_missing_text_embeds: true
+  val:
+    max_episodes: 2
+    max_windows_per_episode: 1
+    allow_missing_text_embeds: true
+
+wandb:
+  enabled: false
+  mode: disabled
