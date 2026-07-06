@@ -1,0 +1,9 @@
+{
+  "long_policy_turn_on_sink_faucet": {
+    "split": "pretrain",
+    "num_trials": 1,
+    "tasks": [
+      "TurnOnSinkFaucet"
+    ]
+  }
+}

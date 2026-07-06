@@ -30,6 +30,8 @@ import imageio
 import numpy as np
 import tqdm
 
+import robocasa  # noqa: F401  # Registers the robocasa/* gymnasium namespace.
+
 from robocasa_acg_policy_backends import (
     FastWAMPolicyClient,
     WebsocketPolicyClient,
@@ -220,8 +222,9 @@ def get_base_env(env: Any) -> Any:
 
 
 def get_obs_state(obs: dict[str, Any]) -> np.ndarray:
-    # Match RoboCasa365 LeRobot v3 observation.state:
-    # base_pos(3) + base_quat(4) + eef_pos_rel(3) + eef_quat_rel(4) + gripper_qpos(2).
+    # Match RoboCasa365 LeRobot observation.state order used for FastWAM training:
+    # base_position(3), base_rotation quaternion(4), ee_position_relative(3),
+    # ee_rotation_relative quaternion(4), gripper_qpos(2).
     return np.concatenate(
         (
             np.asarray(obs["state.base_position"]),
@@ -498,12 +501,6 @@ def aggregate(rows: list[dict[str, Any]], group_keys: tuple[str, ...]) -> list[d
 
 @dataclasses.dataclass
 class EpisodeResult:
-    eval_protocol: str
-    gt_matched: bool
-    gt_episode_index: int | None
-    gt_window_start: int | None
-    gt_video_path: str | None
-    protocol_note: str
     bucket: str
     split: str
     task: str
@@ -652,16 +649,6 @@ def run_episode(
         "wrong_target_available": wrong_target is not None,
     }
     return EpisodeResult(
-        eval_protocol="online_task_success_rate",
-        gt_matched=False,
-        gt_episode_index=None,
-        gt_window_start=None,
-        gt_video_path=None,
-        protocol_note=(
-            "Online RoboCasa rollout sampled from task/split/seed. "
-            "This episode is not tied to a RoboCasa365 dataset episode; "
-            "use eval_robocasa_acg_open_loop_wam_smoke.py for GT-matched video diagnostics."
-        ),
         bucket=bucket,
         split=split,
         task=task,
@@ -771,10 +758,15 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--num-trials", type=int, default=5)
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--max-horizon", type=int, default=None)
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--replan-steps", type=int, default=5)
     parser.add_argument("--render-every", type=int, default=2)
+    parser.add_argument(
+        "--max-episode-steps",
+        type=int,
+        default=0,
+        help="Smoke-only cap for rollout length. <=0 keeps the RoboCasa task horizon.",
+    )
     parser.add_argument("--video-policy", choices=["all", "success_failure_sample", "none"], default="all")
     parser.add_argument("--disturbance-threshold", type=float, default=0.05)
     parser.add_argument("--fastwam-repo", default="/mnt/yuhan/FastWAM_robocasa_acg_8gpu")
@@ -794,6 +786,12 @@ def main() -> None:
     parser.add_argument("--fastwam-action-horizon", type=int, default=32)
     parser.add_argument("--fastwam-num-inference-steps", type=int, default=10)
     parser.add_argument("--fastwam-rand-device", default="cpu")
+    parser.add_argument(
+        "--robocasa-obj-registries",
+        default="lightwheel",
+        help="Comma-separated RoboCasa object registries for smoke eval. Empty keeps upstream defaults.",
+    )
+    parser.add_argument("--robocasa-use-distractors", action="store_true")
     args = parser.parse_args()
 
     if gym is None or get_task_horizon is None:
@@ -811,12 +809,6 @@ def main() -> None:
     buckets = args.bucket or list(plan.keys())
     resolved_action_layout = resolve_action_layout(args.action_layout, args.policy_backend)
     run_config = vars(args) | {
-        "eval_protocol": "online_task_success_rate",
-        "gt_matched": False,
-        "protocol_note": (
-            "This evaluator measures closed-loop online RoboCasa success rate. "
-            "It does not have a one-to-one RoboCasa365 GT demo for each rollout."
-        ),
         "buckets": buckets,
         "plan": {k: plan[k] for k in buckets},
         "resolved_action_layout": resolved_action_layout,
@@ -846,6 +838,11 @@ def main() -> None:
         )
     rows: list[dict[str, Any]] = []
     manifest_rows: list[dict[str, Any]] = []
+    env_kwargs: dict[str, Any] = {"use_distractors": bool(args.robocasa_use_distractors)}
+    if args.robocasa_obj_registries.strip():
+        env_kwargs["obj_registries"] = tuple(
+            x.strip() for x in args.robocasa_obj_registries.split(",") if x.strip()
+        )
 
     for bucket in buckets:
         if bucket not in plan:
@@ -855,22 +852,13 @@ def main() -> None:
         num_trials = int(plan[bucket].get("num_trials", args.num_trials))
         for task in tasks:
             pair = parse_pair_key(task)
-            manifest_rows.append(
-                {
-                    "eval_protocol": "online_task_success_rate",
-                    "gt_matched": False,
-                    "bucket": bucket,
-                    "split": split,
-                    "task": task,
-                    **pair,
-                }
-            )
+            manifest_rows.append({"bucket": bucket, "split": split, "task": task, **pair})
             horizon = int(get_task_horizon(task))
-            if args.max_horizon is not None:
-                horizon = min(horizon, int(args.max_horizon))
+            if args.max_episode_steps > 0:
+                horizon = min(horizon, int(args.max_episode_steps))
             env = None
             try:
-                env = gym.make(f"robocasa/{task}", split=split, seed=args.seed)
+                env = gym.make(f"robocasa/{task}", split=split, seed=args.seed, **env_kwargs)
                 for episode_idx in tqdm.tqdm(
                     range(num_trials), desc=f"{bucket}/{task}", dynamic_ncols=True
                 ):

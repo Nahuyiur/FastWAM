@@ -27,6 +27,28 @@ ensure_private_macro() {
   fi
 }
 
+count_files() {
+  local dir="$1"
+  if [[ ! -d "${dir}" ]]; then
+    echo 0
+    return
+  fi
+  find "${dir}" -type f | wc -l
+}
+
+assets_ok() {
+  local obj_root="${ROBOCASA_REPO}/robocasa/models/assets/objects"
+  local lw_count
+  local objaverse_count
+  local aigen_count
+  lw_count="$(count_files "${obj_root}/lightwheel")"
+  objaverse_count="$(count_files "${obj_root}/objaverse")"
+  aigen_count="$(count_files "${obj_root}/aigen_objs")"
+  echo "[setup] asset_counts lightwheel=${lw_count} objaverse=${objaverse_count} aigen_objs=${aigen_count}" \
+    | tee -a "${ROOT}/logs/setup_robocasa_eval_env.log"
+  (( lw_count > 500 && objaverse_count > 1000 && aigen_count > 1000 ))
+}
+
 python_ok() {
   PYTHONPATH="${REPO_DIR}/src:${ROBOSUITE_REPO}:${ROBOCASA_REPO}:${PYTHONPATH:-}" "${PYTHON}" - <<'PY'
 import gymnasium
@@ -53,12 +75,18 @@ ensure_private_macro "${ROBOSUITE_REPO}" "robosuite"
 ensure_private_macro "${ROBOCASA_REPO}" "robocasa"
 
 ASSET_SENTINEL="${ROBOCASA_REPO}/.robocasa_assets_all.done"
-if [[ ! -f "${ASSET_SENTINEL}" ]]; then
-  echo "[setup] downloading RoboCasa kitchen assets; this is about 10GB" | tee -a "${ROOT}/logs/setup_robocasa_eval_env.log"
+if ! assets_ok; then
+  echo "[setup] downloading missing RoboCasa object assets; this is large" | tee -a "${ROOT}/logs/setup_robocasa_eval_env.log"
   PYTHONPATH="${REPO_DIR}/src:${ROBOSUITE_REPO}:${ROBOCASA_REPO}:${PYTHONPATH:-}" \
-    bash -lc "printf 'y\n' | '${PYTHON}' -m robocasa.scripts.download_kitchen_assets --type all" \
+    bash -lc "printf 'y\n' | '${PYTHON}' -m robocasa.scripts.download_kitchen_assets --type objs_lw objs_objaverse objs_aigen" \
     >> "${ROOT}/logs/setup_robocasa_eval_env.log" 2>&1
+fi
+
+if assets_ok; then
   date -Is > "${ASSET_SENTINEL}"
+else
+  echo "[setup] RoboCasa object assets are still incomplete; refusing eval" | tee -a "${ROOT}/logs/setup_robocasa_eval_env.log" >&2
+  exit 20
 fi
 
 python_ok | tee -a "${ROOT}/logs/setup_robocasa_eval_env.log"

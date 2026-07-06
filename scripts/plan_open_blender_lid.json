@@ -1,0 +1,9 @@
+{
+  "long_policy_open_blender_lid": {
+    "split": "pretrain",
+    "num_trials": 1,
+    "tasks": [
+      "OpenBlenderLid"
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "stage1_interface_smoke": {
+    "split": "pretrain",
+    "num_trials": 1,
+    "tasks": [
+      "OpenBlenderLid",
+      "OpenCabinet",
+      "OpenDrawer",
+      "TurnOnSinkFaucet"
+    ]
+  }
+}

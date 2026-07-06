@@ -10,6 +10,7 @@ PLAN_PATH="${PLAN_PATH:-${REPO_DIR}/scripts/robocasa_acg_eval_plan_v1.json}"
 EXPECTED_MIN_STEP="${EXPECTED_MIN_STEP:-50000}"
 POLL_SECONDS="${POLL_SECONDS:-120}"
 WAIT_FOR_TRAINING="${WAIT_FOR_TRAINING:-1}"
+WAIT_FOR_CHECKPOINT_STEP="${WAIT_FOR_CHECKPOINT_STEP:-0}"
 TRIALS_PER_TASK="${TRIALS_PER_TASK:-5}"
 FASTWAM_DEVICE="${FASTWAM_DEVICE:-cuda:0}"
 FASTWAM_INFER_STEPS="${FASTWAM_INFER_STEPS:-10}"
@@ -56,7 +57,27 @@ wait_for_training_exit() {
   echo "[watch] training process exited; time=$(date -Is)"
 }
 
+wait_for_checkpoint_step() {
+  if [[ "${WAIT_FOR_CHECKPOINT_STEP}" != "1" ]]; then
+    return
+  fi
+  while true; do
+    ckpt="$(latest_weights_checkpoint || true)"
+    step=0
+    if [[ -n "${ckpt}" ]]; then
+      step="$(checkpoint_step "${ckpt}")"
+    fi
+    if (( step >= EXPECTED_MIN_STEP )); then
+      echo "[watch] checkpoint step gate passed; latest_checkpoint_step=${step}; time=$(date -Is)"
+      return
+    fi
+    echo "[watch] waiting for checkpoint step >= ${EXPECTED_MIN_STEP}; latest_checkpoint_step=${step}; time=$(date -Is)"
+    sleep "${POLL_SECONDS}"
+  done
+}
+
 wait_for_training_exit
+wait_for_checkpoint_step
 
 CKPT="$(latest_weights_checkpoint || true)"
 if [[ -z "${CKPT}" ]]; then
@@ -78,6 +99,18 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="${REPO_DIR}/src:${ROBOSUITE_REPO}:${ROBOCASA_REPO}:${PYTHONPATH:-}"
 
+check_eval_runtime() {
+  "${PYTHON}" - <<'PY'
+import OpenGL.EGL
+print("robocasa_eval_egl_import_ok")
+PY
+}
+
+if ! check_eval_runtime; then
+  echo "[watch] EGL import failed; refusing FastWAM RoboCasa eval on this host" >&2
+  exit 12
+fi
+
 OUT_DIR="${EVAL_ROOT}/runs/${RUN_ID}_$(basename "${CKPT}" .pt)_stage1_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "${OUT_DIR}"
 echo "${OUT_DIR}" > "${LOG_DIR}/latest_eval_output_dir.txt"
@@ -85,6 +118,7 @@ echo "${OUT_DIR}" > "${LOG_DIR}/latest_eval_output_dir.txt"
 CMD=(
   "${PYTHON}" "${REPO_DIR}/scripts/robocasa_acg_eval.py"
   --policy-backend fastwam
+  --action-layout base_first
   --plan "${PLAN_PATH}"
   --output-dir "${OUT_DIR}"
   --num-trials "${TRIALS_PER_TASK}"

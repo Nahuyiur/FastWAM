@@ -123,12 +123,17 @@ class FastWAMPolicyClient:
 
         shape_meta = OmegaConf.to_container(cfg.data.train.shape_meta, resolve=True)
         processor_cfg = cfg.data.train.processor
+        norm_exception_mode = (
+            {}
+            if processor_cfg.norm_exception_mode is None
+            else OmegaConf.to_container(processor_cfg.norm_exception_mode, resolve=True)
+        )
         stats = load_dataset_stats_from_json(str(norm_stats))
         self.normalizer = LinearNormalizer(
             shape_meta=shape_meta,
             use_stepwise_action_norm=bool(processor_cfg.use_stepwise_action_norm),
             default_mode=processor_cfg.norm_default_mode,
-            exception_mode=OmegaConf.to_container(processor_cfg.norm_exception_mode, resolve=True),
+            exception_mode=norm_exception_mode,
             stats=stats,
         )
 

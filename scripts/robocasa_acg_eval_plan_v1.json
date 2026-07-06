@@ -50,7 +50,7 @@
   },
   "target_id_sanity": {
     "split": "target",
-    "num_trials": 25,
+    "num_trials": 20,
     "tasks": [
       "OpenCabinet",
       "OpenDrawer",
@@ -60,7 +60,7 @@
   },
   "ood_pair_strict": {
     "split": "target",
-    "num_trials": 50,
+    "num_trials": 20,
     "tasks": [
       "CloseBlenderLid",
       "CloseFridge",
@@ -76,7 +76,7 @@
   },
   "ood_pair_probe": {
     "split": "target",
-    "num_trials": 25,
+    "num_trials": 20,
     "tasks": [
       "PickPlaceToasterToCounter",
       "SlideDishwasherRack"

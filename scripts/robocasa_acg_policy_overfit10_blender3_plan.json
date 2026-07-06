@@ -1,0 +1,9 @@
+{
+  "overfit10_policy_blender3": {
+    "split": "pretrain",
+    "num_trials": 3,
+    "tasks": [
+      "OpenBlenderLid"
+    ]
+  }
+}

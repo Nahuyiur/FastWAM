@@ -1,0 +1,70 @@
+# @package _global_
+
+defaults:
+  - override /data: robocasa_acg_v1_2cam224_train
+  - override /model: fastwam_joint
+  - _self_
+
+batch_size: 1
+num_workers: 0
+prefetch_factor: null
+persistent_workers: false
+
+lr_scheduler_type: cosine
+learning_rate: 2.0e-5
+num_epochs: 100
+max_steps: 300
+log_every: 5
+save_every: 150
+save_final_checkpoint: true
+eval_every: 50
+eval_num_inference_steps: 10
+
+gradient_accumulation_steps: 1
+mixed_precision: bf16
+seed: 777
+max_grad_norm: 1.0
+weight_decay: 0.0
+resume: null
+
+checkpoint:
+  init_from_weights: /mnt/yuhan/experiments/robocasa_acg_v1/fastwam/runs/robocasa_acg_v1_fastwam_8gpu_20260629_214052_evalfix/checkpoints/weights/step_020000.pt
+  load_step_from_weights: false
+  initial_step: 0
+  advance_scheduler_to_step: false
+  save_full_state: false
+  require_full_state: false
+  weight_min_free_gb: 5
+  full_state_min_free_gb: 20
+  keep_last_full_states: 0
+
+data:
+  train:
+    max_samples: 10
+    max_episodes: null
+    max_windows_per_episode: null
+    allow_missing_text_embeds: false
+    window_stride: 2
+  val:
+    # Deliberately point val at the exact same first 10 train windows.
+    # This makes eval a strict memorization sanity check, not generalization.
+    episode_manifest_split: train_id
+    max_samples: 10
+    max_episodes: null
+    max_windows_per_episode: null
+    allow_missing_text_embeds: false
+    window_stride: 2
+    is_training_set: false
+
+open_loop_wam_eval:
+  enabled: false
+
+wandb:
+  enabled: true
+  workspace: null
+  project: robocasa-acg-fastwam
+  name: robocasa_acg_v1_fastwam_overfit10_from_step020000
+  group: robocasa-acg-v1-overfit10-debug
+  job_type: debug-overfit
+  tags: [robocasa365, acg-v1, fastwam, overfit10, debug]
+  mode: online
