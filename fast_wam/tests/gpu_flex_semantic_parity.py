@@ -190,6 +190,7 @@ def main() -> None:
             base_cfg,
             training_attention_backend="structured_sdpa",
             training_kernel_mode="optimized",
+            joint_action_video_attention=True,
         )
         mcore_config = transformer_config(base_cfg, 1, torch.bfloat16)
         torch.manual_seed(args.seed)

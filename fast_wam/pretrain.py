@@ -124,6 +124,14 @@ def fast_wam_extra_args(parser):
             "The reference mode preserves the accepted implementation."
         ),
     )
+    group.add_argument(
+        "--fast-wam-joint-action-video-attention",
+        action="store_true",
+        help=(
+            "Use RoboCasa FastWAMJoint semantics: action queries attend to all "
+            "jointly denoised video tokens instead of only the clean first frame."
+        ),
+    )
     group.add_argument("--fast-wam-parquet-cache-size", type=int, default=4)
     group.add_argument(
         "--fast-wam-action-dim",
@@ -172,6 +180,9 @@ def model_config_from_args(args=None) -> FastWAMConfig:
         proprio_dim=int(args.fast_wam_proprio_dim),
         training_attention_backend=args.fast_wam_attention_backend,
         training_kernel_mode=args.fast_wam_kernel_mode,
+        joint_action_video_attention=bool(
+            args.fast_wam_joint_action_video_attention
+        ),
     )
 
 

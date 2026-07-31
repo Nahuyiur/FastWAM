@@ -129,8 +129,10 @@ runner 从 DCP tracker 选择最新 iteration，按 TP1+DP8 reshard load。每�
 - 文本：固定官方 prompt，UMT5 128 tokens，zero padding 对 DiT 保持可见。
 - FlowMatch：video/action 独立 noise 和 timestep，shift 都是 5.0，首个 video
   latent step 保持 clean。
-- MoT mask：first video frame 只看自己；future video 看全部 video；action 看
-  first video frame 和全部 action；video 不看 action。
+- MoT mask：普通 FastWAM 中 first video frame 只看自己，future video 看全部
+  video，action 看 first video frame 和全部 action，video 不看 action。RoboCasa
+  `fastwam_joint` 入口显式设置 `joint_action_video_attention=true`，此时 action 看
+  全部联合去噪 video 和全部 action；两种合同不能混用。
 - loss：未来 2 个 video latent steps 与 32 action tokens 分别 masked mean，
   timestep weighting 后以 1:1 相加。
 - optimizer：AdamW `(0.9,0.95)`、epsilon `1e-8`、weight decay `1e-2`、

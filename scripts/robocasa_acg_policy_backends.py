@@ -216,6 +216,7 @@ class MegatronFastWAMPolicyClient:
         action_dim: int,
         proprio_dim: int,
         action_horizon: int,
+        num_video_frames: int,
         num_inference_steps: int,
         seed: int,
     ):
@@ -267,8 +268,10 @@ class MegatronFastWAMPolicyClient:
             action=replace(base.action, action_dim=int(action_dim)),
             proprio_dim=int(proprio_dim),
             action_horizon=int(action_horizon),
+            num_video_frames=int(num_video_frames),
             num_inference_steps=int(num_inference_steps),
             inference_seed=int(seed),
+            joint_action_video_attention=True,
         )
         self.model = FastWAMModel(
             self.config,
@@ -370,6 +373,7 @@ class MegatronFastWAMPolicyClient:
             proprio,
             seed=self.seed,
             num_inference_steps=self.config.num_inference_steps,
+            num_video_frames=self.config.num_video_frames,
         )
         actions = self._denormalize_action(actions)
         expected = (self.action_horizon, self.action_dim)

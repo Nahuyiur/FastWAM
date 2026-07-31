@@ -1,6 +1,6 @@
 # Megatron FastWAM RoboCasa 中文说明
 
-Last updated: 2026-07-31
+Last updated: 2026-08-01
 
 ## 1. 目标与代码来源
 
@@ -33,7 +33,8 @@ Megatron 版本继续复用 baseline 的 Hydra task
 - 动作：32 步、12 维；proprio：32 步、16 维；
 - 文本：已有 UMT5 128-token embedding cache；
 - 归一化：沿用 baseline 的 train-id stats 和 MIN/MAX 处理；
-- FlowMatch、video/action loss、attention 可见性和 action inference 语义不变；
+- FlowMatch、video/action loss、attention 可见性和 action inference 均以 RoboCasa
+  task 实际选中的 `fastwam_joint` 为基准；
 - 正式成功率仍由 `info["success"]` 给出，不把额外诊断指标混成成功率。
 
 ## 3. 在 FastWAM 基础上的具体修改
@@ -59,19 +60,30 @@ BF16 保存，DCP 可在 TP1/TP2/TP4 间重分片。
 
 ### 3.2 注意力等价优化
 
-训练时的 no-future-leakage 可见性合同保持不变：首帧 video query 只看首帧；未来
-video query 看全部 video；action query 只看首帧 video 和全部 action，不能看未来
-video。当前提供两个语义相同的优化后端：
+RoboCasa task 通过 `override /model: fastwam_joint` 选择的合同是：首帧 video query
+只看首帧；未来 video query 看全部 video；action query 看全部联合去噪 video 和全部
+action；video 不看 action。这里的 future video 是当前 diffusion step 的带噪/预测
+latent，不是数据中的真值未来 RGB。
+
+普通 LIBERO FastWAM 的 action 只看首帧 video。两种合同现在由
+`joint_action_video_attention` 显式区分：普通入口默认 `false`，RoboCasa 训练脚本和
+评估 backend 强制设为 `true`，避免修改 RoboCasa 时暗中改变 LIBERO。当前提供两个
+语义相同的优化后端：
 
 - `structured_sdpa`：按三类 query 拆成三个无 mask SDPA，仍是正式默认；
 - `flex`：将同一谓词编译成 FlexAttention BlockMask。BlockMask 按
   `device/video长度/action长度/首帧长度` 缓存，不再依赖临时 dense mask 的内存地址，
   也不在每个 step 构造二次方 dense mask。
 
-两条路径使用同一套 Q/K/V 投影、RoPE、残差、cross-attention、FFN 和 loss。访问图
+两条路径使用同一套 Q/K/V 投影、RoPE、残差、cross-attention、FFN 和 loss。所选
+FastWAM 变体的访问图
 逐元素完全相同；但 BF16 kernel 的归约顺序不同，因此只保证受门限约束的数值等价，
 不承诺位级相同。可通过 `ATTENTION_BACKEND=flex` 显式启用 Flex，默认仍为
 `structured_sdpa`。
+
+这里的 SDPA 是 PyTorch 的 scaled dot-product attention 计算接口，不等同于
+Megatron。`structured_sdpa` 只是利用当前 mask 的块结构，把一次带 dense mask 的
+attention 等价拆成三个 SDPA 调用；Megatron 负责的是 TP/DP、分布式优化器和 DCP。
 
 ### 3.3 RoboCasa 数据桥接
 
@@ -127,11 +139,30 @@ fallback，并显式关闭依赖 Apex 的 gradient accumulation fusion。原生 
 1. 从训练 DCP model-only 加载 FastWAM；
 2. 用冻结 Wan VAE 编码当前两路 RGB；
 3. 读取同一份 UMT5 cache 和 normalization stats；
-4. 运行 `infer_action_encoded()`；
-5. 反归一化为 `(32,12)` action chunk；
-6. 复用原 evaluator 的环境、replan、视频和 `info["success"]` 统计。
+4. 同时初始化未来 video latent 与 action latent，按 10 个 diffusion step 联合去噪；
+5. 每步 action 读取当前预测的全部 video latent，运行
+   `infer_action_encoded()` 得到 action；
+6. 反归一化为 `(32,12)` action chunk；
+7. 复用原 evaluator 的环境、replan、视频和 `info["success"]` 统计。
 
 训练和评估退出时都会显式销毁 NCCL process group，避免连续作业留下通信上下文。
+
+### 3.6 语义审计发现与纠错
+
+2026-08-01 对 RoboCasa Hydra 实际入口进行反向追踪后，确认 task 选择的是
+`fastwam_joint`，而不是普通 FastWAM。旧 Megatron 实现存在两处会改变策略输出的
+偏差：
+
+1. action query 只读取首帧 video，训练和评估均没有复现
+   `FastWAMJoint` 的“action 读取全部联合去噪 video”合同；
+2. VideoDiT 输出 patch 的反展开顺序写成了 `[channel, pt, ph, pw]`，而 baseline
+   实际采用 `[pt, ph, pw, channel]`。单帧 action-only smoke 不会暴露该错误，但联合
+   视频滚动会把预测 latent 排列打乱，并继续影响 action。
+
+当前修复包括：显式区分 ordinary/Joint 两种模型合同；RoboCasa train/eval 强制 Joint；
+恢复联合 video-action 去噪；修正 patch 反展开；新增直接调用 baseline 源模块的
+跨实现回归。修复前的 Megatron/Flex/cache 性能数字只能说明错误实现的运行速度，不能
+再作为“与 RoboCasa baseline 同语义”的加速证据。
 
 ## 4. 准备与启动
 
@@ -250,7 +281,9 @@ $PYTHON_BIN scripts/robocasa_acg_eval.py \
 
 完整 VideoDiT + ActionDiT 参数量由训练入口实测为 `6,020,753,612`。
 
-- CPU：RoboCasa 数据、cache、配置和模型单测通过；
+- CPU：25 个 FastWAM 模型回归测试通过；其中固定同一组权重、真实 baseline 源模块、
+  固定 batch/noise/timestep，对比了 forward、video/action loss、全部参数梯度、AdamW
+  单步更新和 Joint action inference；
 - 真实 TP2 小模型：forward、backward、AdamW、DCP roundtrip exact；
 - 6B 模型 TP1+DP4：训练、验证、完整保存、严格恢复通过；
 - 6B 模型 TP2+DP2：训练与验证通过，峰值约 40.5GB/卡；
@@ -259,9 +292,11 @@ $PYTHON_BIN scripts/robocasa_acg_eval.py \
   `(32,12)` 且全为有限值。
 - 编译版 FlexAttention 独立 forward/backward 通过；Flex mask 谓词对三组不同长度
   与 dense mask 逐元素完全一致；
-- 正式 RoboCasa 尺寸的 `6,020,753,612` 参数 BF16 模型用 seed 17/29/43 做同权重
-  structured/Flex A/B，三组均通过。最差 action loss 相对差 `0.2392%`，全层参数
-  梯度范数相对差 `0.4320%`，全层抽样梯度最大绝对差 `0.046875`。
+- 正式 RoboCasa 尺寸的 `6,020,753,612` 参数 BF16 Joint 模型用 seed 17/29/43 做
+  同权重 structured/Flex A/B，三组均通过。最差 action loss 相对差 `0.1149%`，
+  全层参数梯度范数相对差 `0.4136%`，全层抽样梯度最大绝对差 `0.0234375`。显式
+  `joint_action_video_attention=true` 同步到远端后又独立复跑 seed 17，通过相同门禁；
+- 远端最终代码的 25 个模型回归测试及 Python 编译检查均通过。
 
 严格断点测试关键结果：iteration 2 的 DCP 保存约 30.1 秒；恢复 load 约 20.6 秒；
 恢复后 iteration 精确为 2，下一步 consumed samples 从 8 增到 12；step 3 和 validation
@@ -274,27 +309,23 @@ $PYTHON_BIN scripts/robocasa_acg_eval.py \
 activation checkpointing；Megatron 当前没有 activation recompute，因此速度提升
 伴随更高显存，不能只报速度而隐去该差异。
 
-| 协议 | baseline mean | Megatron mean | 加速 |
-|---|---:|---:|---:|
-| global batch 4，100 step，丢弃前 20 | 0.9364 s | 0.7260 s | 1.290x |
-| global batch 4，Flex，100 step，丢弃前 20 | 0.9364 s | 0.7295 s | 1.284x |
-| global batch 4，60 step，丢弃前 20 | 0.9544 s | 0.7230 s | 1.320x |
-| global batch 32，30 step，丢弃前 10 | 4.4763 s | 4.1503 s | 1.079x |
-| global batch 32，Megatron latent cache | 4.4763 s | 3.7498 s | 1.194x |
+修正 Joint attention、联合推理和 video patch 顺序后，重新运行 online-VAE、
+`structured_sdpa`、global batch 4 的 100-step 训练。两边都丢弃前 20 step，统计
+step 21--100：
 
-更长的 100-step 协议统计 step 21--100，baseline/Megatron 中位数为
-`0.8941/0.7157 s`，P90 为 `1.0827/0.7406 s`，两者均完成 100 step；
-Megatron 全程 `skipped=0`、`nan=0`。在 global batch 32 中位数为
-`4.5115/4.0925 s`；cache 路线为
-`3.6985 s`。baseline 峰值约 41.0--41.9GB，TP1 Megatron 峰值约 52.1GB。
+| 协议 | mean | median | P90 | 稳态 step | skipped/nan |
+|---|---:|---:|---:|---:|---:|
+| baseline FastWAMJoint | 0.9364 s | 0.8941 s | 1.0827 s | 80 | 0/0 |
+| corrected Megatron Joint | 0.7325 s | 0.7234 s | 0.7480 s | 80 | 0/0 |
 
-Flex 的 80 个稳态 step 中位数为 `0.7241 s`，P90 为 `0.7375 s`，显存峰值约
-`52.12GB/卡`，同样 `skipped=0`、`nan=0`。与 `structured_sdpa` 相比，Flex mean
-慢 `0.48%`、median 慢 `1.17%`，P90 快 `0.42%`，属于近似持平而非有效加速，
-所以不修改正式默认后端。
+按 mean 计算为 `1.278x`，即平均 step 时间降低 `21.77%`。baseline profiler 的峰值
+约 `41.0 GiB/卡`；corrected Megatron rank-0 日志的 max allocated 为
+`52,118 MB`（约 `50.9 GiB`）。速度提升伴随更高显存，主要原因是 baseline 启用了
+activation checkpointing，而当前 Megatron 路径没有 recompute。
 
-cache 性能测试使用 8-sample smoke cache 循环读取，只用于隔离“无 MP4 解码、无
-在线 VAE”的稳态路径，不代表完整 286101-window cache 的构建速度或随机 I/O 表现。
+修复前的 `1.290x`、Flex、global batch 32 和 8-sample cache 表格已撤销。它们不是
+Joint 同语义结果。当前 Flex 只有 6B BF16 数值等价证据，尚无修正语义后的正式吞吐
+优势；8-sample cache 也被完整数据合同正确拒绝，不能冒充 286101-window 正式 cache。
 
 复测入口：
 
@@ -307,8 +338,8 @@ BENCH_ROOT=outputs/benchmarks/megatron_repeat \
 TRAIN_ITERS=60 WARMUP_ITERS=20 \
 bash fast_wam/scripts/benchmark_robocasa_megatron.sh
 
-BENCH_ROOT=outputs/benchmarks/megatron_flex_repeat \
-ATTENTION_BACKEND=flex TRAIN_ITERS=100 WARMUP_ITERS=20 \
+BENCH_ROOT=outputs/benchmarks/megatron_joint_repeat \
+ATTENTION_BACKEND=structured_sdpa TRAIN_ITERS=100 WARMUP_ITERS=20 \
 MICRO_BATCH_SIZE=1 GLOBAL_BATCH_SIZE=4 \
 bash fast_wam/scripts/benchmark_robocasa_megatron.sh
 ```
@@ -320,7 +351,7 @@ bash fast_wam/scripts/benchmark_robocasa_megatron.sh
 3. TP2/TP4 主要降低显存，当前 4 卡模型规模下未体现吞吐优势；
 4. 8/16 卡与多机只完成代码合同，尚未物理实测；
 5. 性能测试不是收敛质量测试，不能据此宣称成功率不回退；
-6. FlexAttention 已通过结构与短程数值门禁，但没有吞吐优势，也没有 50k 收敛与完整
-   RoboCasa 成功率证据，因此不应替换正式默认；
+6. FlexAttention 已通过结构与 6B BF16 数值门禁，但修正 Joint 语义后尚未证明吞吐
+   优势，也没有 50k 收敛与完整 RoboCasa 成功率证据，因此不应替换正式默认；
 7. 正式 50k 前至少要完成：目标拓扑 100-step 数值 smoke、save/resume、固定 seed
    open-loop action parity，以及与 baseline 相同 plan 的完整在线 RoboCasa eval。

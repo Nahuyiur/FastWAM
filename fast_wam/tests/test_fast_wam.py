@@ -31,7 +31,47 @@ from fast_wam.train.sampler import (
 def _reference_modules():
     root = Path(__file__).resolve().parents[3] / "lerobot/src/lerobot/policies/fastwam/wan"
     if not root.is_dir():
-        pytest.skip("Sibling LeRobot reference is unavailable")
+        source_root = Path(__file__).resolve().parents[2] / "src"
+        if str(source_root) not in sys.path:
+            sys.path.insert(0, str(source_root))
+        from fastwam.models.wan22 import action_dit, mot, wan_video_dit
+        from fastwam.models.wan22.schedulers import scheduler_continuous
+
+        class FastWAMJointMaskReference:
+            @torch.no_grad()
+            def _build_mot_attention_mask(
+                self,
+                video_seq_len,
+                action_seq_len,
+                video_tokens_per_frame,
+                device,
+            ):
+                total_seq_len = video_seq_len + action_seq_len
+                mask = torch.zeros(
+                    (total_seq_len, total_seq_len),
+                    dtype=torch.bool,
+                    device=device,
+                )
+                mask[:video_seq_len, :video_seq_len] = (
+                    self.video_expert.build_video_to_video_mask(
+                        video_seq_len=video_seq_len,
+                        video_tokens_per_frame=video_tokens_per_frame,
+                        device=device,
+                    )
+                )
+                mask[video_seq_len:, video_seq_len:] = True
+                mask[video_seq_len:, :video_seq_len] = True
+                return mask
+
+        modular = types.SimpleNamespace(
+            ActionDiT=action_dit.ActionDiT,
+            MoT=mot.MoT,
+            FastWAMJoint=FastWAMJointMaskReference,
+            WanContinuousFlowMatchScheduler=(
+                scheduler_continuous.WanContinuousFlowMatchScheduler
+            ),
+        )
+        return wan_video_dit, modular
     package = types.ModuleType("_fastwam_reference")
     package.__path__ = [str(root)]
     sys.modules[package.__name__] = package
@@ -58,7 +98,22 @@ def _reference_modules():
         setattr(components, name, lambda *args, **kwargs: None)
     sys.modules[components.__name__] = components
     modular = load("_fastwam_reference.modular", "modular.py")
+    modular.WanContinuousFlowMatchScheduler = (
+        video.WanContinuousFlowMatchScheduler
+    )
     return video, modular
+
+
+def _reference_compatible_tiny_config(*, joint: bool = True):
+    """Use a head dimension whose legacy 3D RoPE split is exactly representable."""
+
+    cfg = FastWAMConfig.tiny()
+    return replace(
+        cfg,
+        video=replace(cfg.video, attn_head_dim=24),
+        action=replace(cfg.action, attn_head_dim=24),
+        joint_action_video_attention=joint,
+    )
 
 
 def _copy_reference_weights(ours, video, action):
@@ -73,13 +128,14 @@ def _copy_reference_weights(ours, video, action):
         parameter.data.copy_(source[source_name])
 
 
-def test_tiny_inference_matches_lerobot():
+def test_tiny_action_only_inference_matches_lerobot_fastwam():
     video_module, modular = _reference_modules()
     torch.manual_seed(7)
-    cfg = FastWAMConfig.tiny()
+    cfg = _reference_compatible_tiny_config(joint=False)
     ours = FastWAMModel(cfg)
     v, a = cfg.video, cfg.action
     video = video_module.WanVideoDiT(
+        has_image_input=False,
         hidden_dim=v.hidden_dim,
         in_dim=v.in_dim,
         ffn_dim=v.ffn_dim,
@@ -95,7 +151,6 @@ def test_tiny_inference_matches_lerobot():
         fuse_vae_embedding_in_latents=True,
         video_attention_mask_mode="first_frame_causal",
         action_conditioned=False,
-        fp32_attention=True,
     )
     action = modular.ActionDiT(
         hidden_dim=a.hidden_dim,
@@ -107,7 +162,6 @@ def test_tiny_inference_matches_lerobot():
         num_heads=a.num_heads,
         attn_head_dim=a.attn_head_dim,
         num_layers=a.num_layers,
-        fp32_attention=True,
     )
     _copy_reference_weights(ours, video, action)
     reference_proprio = torch.nn.Linear(cfg.proprio_dim, cfg.video.text_dim)
@@ -144,7 +198,7 @@ def test_tiny_inference_matches_lerobot():
     reference = torch.randn(
         (1, cfg.action_horizon, a.action_dim), generator=generator, dtype=torch.float32
     )
-    scheduler = video_module.WanContinuousFlowMatchScheduler(shift=cfg.sigma_shift)
+    scheduler = modular.WanContinuousFlowMatchScheduler(shift=cfg.sigma_shift)
     timesteps, deltas = scheduler.build_inference_schedule(
         cfg.num_inference_steps, reference.device, reference.dtype
     )
@@ -161,8 +215,139 @@ def test_tiny_inference_matches_lerobot():
         )
         reference = scheduler.step(action.post_dit(tokens, action_pre), delta, reference)
 
-    actual = ours.infer_action_encoded(latents, context, context_mask, proprio)
+    actual = ours.infer_action_only_encoded(latents, context, context_mask, proprio)
     torch.testing.assert_close(actual, reference[0], atol=1.0e-5, rtol=1.0e-5)
+
+
+def test_tiny_joint_inference_matches_robocasa_fastwam_joint():
+    video_module, modular = _reference_modules()
+    torch.manual_seed(11)
+    cfg = _reference_compatible_tiny_config()
+    ours = FastWAMModel(cfg)
+    v, a = cfg.video, cfg.action
+    video = video_module.WanVideoDiT(
+        has_image_input=False,
+        hidden_dim=v.hidden_dim,
+        in_dim=v.in_dim,
+        ffn_dim=v.ffn_dim,
+        out_dim=v.out_dim,
+        text_dim=v.text_dim,
+        freq_dim=v.freq_dim,
+        eps=v.eps,
+        patch_size=v.patch_size,
+        num_heads=v.num_heads,
+        attn_head_dim=v.attn_head_dim,
+        num_layers=v.num_layers,
+        seperated_timestep=True,
+        fuse_vae_embedding_in_latents=True,
+        video_attention_mask_mode="first_frame_causal",
+        action_conditioned=False,
+    )
+    action_expert = modular.ActionDiT(
+        hidden_dim=a.hidden_dim,
+        action_dim=a.action_dim,
+        ffn_dim=a.ffn_dim,
+        text_dim=a.text_dim,
+        freq_dim=a.freq_dim,
+        eps=a.eps,
+        num_heads=a.num_heads,
+        attn_head_dim=a.attn_head_dim,
+        num_layers=a.num_layers,
+    )
+    _copy_reference_weights(ours, video, action_expert)
+    reference_proprio = torch.nn.Linear(cfg.proprio_dim, cfg.video.text_dim)
+    reference_proprio.weight.data.copy_(ours.proprio_encoder.weight)
+    reference_proprio.bias.data.copy_(ours.proprio_encoder.bias)
+    reference_mot = modular.MoT(
+        {"video": video, "action": action_expert}, mot_checkpoint_mixed_attn=False
+    )
+
+    generator = torch.Generator(device="cpu").manual_seed(31)
+    first_frame = torch.randn(1, v.in_dim, 1, 4, 8, generator=generator)
+    context = torch.randn(1, 5, v.text_dim, generator=generator)
+    context_mask = torch.ones(1, 5, dtype=torch.bool)
+    proprio = torch.randn(1, cfg.proprio_dim, generator=generator)
+    reference_context = torch.cat(
+        [context, reference_proprio(proprio).unsqueeze(1)], dim=1
+    )
+    reference_mask = torch.cat(
+        [context_mask, torch.ones(1, 1, dtype=torch.bool)], dim=1
+    )
+    video_generator = torch.Generator(device="cpu").manual_seed(cfg.inference_seed)
+    action_generator = torch.Generator(device="cpu").manual_seed(cfg.inference_seed)
+    reference_video = torch.randn(
+        1,
+        v.in_dim,
+        (cfg.num_video_frames - 1) // cfg.temporal_downsample_factor + 1,
+        4,
+        8,
+        generator=video_generator,
+    )
+    reference_action = torch.randn(
+        1,
+        cfg.action_horizon,
+        a.action_dim,
+        generator=action_generator,
+    )
+    reference_video[:, :, :1] = first_frame
+    video_scheduler = modular.WanContinuousFlowMatchScheduler(shift=cfg.sigma_shift)
+    action_scheduler = modular.WanContinuousFlowMatchScheduler(shift=cfg.sigma_shift)
+    video_timesteps, video_deltas = video_scheduler.build_inference_schedule(
+        cfg.num_inference_steps, reference_video.device, reference_video.dtype
+    )
+    action_timesteps, action_deltas = action_scheduler.build_inference_schedule(
+        cfg.num_inference_steps, reference_action.device, reference_action.dtype
+    )
+    joint_owner = types.SimpleNamespace(video_expert=video)
+    for video_t, video_delta, action_t, action_delta in zip(
+        video_timesteps,
+        video_deltas,
+        action_timesteps,
+        action_deltas,
+        strict=True,
+    ):
+        video_state = video.pre_dit(
+            reference_video,
+            video_t.reshape(1),
+            reference_context,
+            reference_mask,
+            fuse_vae_embedding_in_latents=True,
+        )
+        action_state = action_expert.pre_dit(
+            reference_action,
+            action_t.reshape(1),
+            reference_context,
+            reference_mask,
+        )
+        attention_mask = modular.FastWAMJoint._build_mot_attention_mask(
+            joint_owner,
+            video_state["tokens"].shape[1],
+            action_state["tokens"].shape[1],
+            video_state["meta"]["tokens_per_frame"],
+            reference_video.device,
+        )
+        output = reference_mot(
+            embeds_all={"video": video_state["tokens"], "action": action_state["tokens"]},
+            attention_mask=attention_mask,
+            freqs_all={"video": video_state["freqs"], "action": action_state["freqs"]},
+            context_all={
+                "video": {"context": video_state["context"], "mask": video_state["context_mask"]},
+                "action": {"context": action_state["context"], "mask": action_state["context_mask"]},
+            },
+            t_mod_all={"video": video_state["t_mod"], "action": action_state["t_mod"]},
+        )
+        video_prediction = video.post_dit(output["video"], video_state)
+        action_prediction = action_expert.post_dit(output["action"], action_state)
+        reference_video = video_scheduler.step(
+            video_prediction, video_delta, reference_video
+        )
+        reference_action = action_scheduler.step(
+            action_prediction, action_delta, reference_action
+        )
+        reference_video[:, :, :1] = first_frame
+
+    actual = ours.infer_action_encoded(first_frame, context, context_mask, proprio)
+    torch.testing.assert_close(actual, reference_action[0], atol=2.0e-5, rtol=2.0e-5)
 
 
 def test_streaming_checkpoint_round_trip(tmp_path):
@@ -232,10 +417,11 @@ def _fixed_training_inputs(cfg):
 def test_tiny_training_matches_reference_and_backward():
     video_module, modular = _reference_modules()
     torch.manual_seed(17)
-    cfg = FastWAMConfig.tiny()
+    cfg = _reference_compatible_tiny_config()
     ours = FastWAMModel(cfg)
     v, a = cfg.video, cfg.action
     video = video_module.WanVideoDiT(
+        has_image_input=False,
         hidden_dim=v.hidden_dim,
         in_dim=v.in_dim,
         ffn_dim=v.ffn_dim,
@@ -251,7 +437,6 @@ def test_tiny_training_matches_reference_and_backward():
         fuse_vae_embedding_in_latents=True,
         video_attention_mask_mode="first_frame_causal",
         action_conditioned=False,
-        fp32_attention=True,
     )
     action_expert = modular.ActionDiT(
         hidden_dim=a.hidden_dim,
@@ -263,7 +448,6 @@ def test_tiny_training_matches_reference_and_backward():
         num_heads=a.num_heads,
         attn_head_dim=a.attn_head_dim,
         num_layers=a.num_layers,
-        fp32_attention=True,
     )
     _copy_reference_weights(ours, video, action_expert)
     reference_proprio = torch.nn.Linear(cfg.proprio_dim, cfg.video.text_dim)
@@ -288,10 +472,10 @@ def test_tiny_training_matches_reference_and_backward():
         ],
         dim=1,
     )
-    scheduler_video = video_module.WanContinuousFlowMatchScheduler(
+    scheduler_video = modular.WanContinuousFlowMatchScheduler(
         shift=cfg.video_train_shift
     )
-    scheduler_action = video_module.WanContinuousFlowMatchScheduler(
+    scheduler_action = modular.WanContinuousFlowMatchScheduler(
         shift=cfg.action_train_shift
     )
     noisy_video = scheduler_video.add_noise(
@@ -328,11 +512,13 @@ def test_tiny_training_matches_reference_and_backward():
         context,
         context_mask,
     )
-    attention_mask = ours.build_training_attention_mask(
+    joint_owner = types.SimpleNamespace(video_expert=video)
+    attention_mask = modular.FastWAMJoint._build_mot_attention_mask(
+        joint_owner,
         video_state["tokens"].shape[1],
         action_state["tokens"].shape[1],
         video_state["meta"]["tokens_per_frame"],
-        device=noisy_video.device,
+        noisy_video.device,
     )
     output = reference_mot(
         embeds_all={
@@ -378,27 +564,95 @@ def test_tiny_training_matches_reference_and_backward():
         * scheduler_action.training_weight(values["timestep_action"])
     ).mean()
 
+    reference_loss = reference_video_loss + reference_action_loss
+    reference_optimizer = torch.optim.AdamW(
+        list(video.parameters())
+        + list(action_expert.parameters())
+        + list(reference_proprio.parameters()),
+        lr=3.0e-4,
+        betas=(0.9, 0.95),
+        eps=1.0e-8,
+        weight_decay=1.0e-2,
+    )
+    actual_optimizer = torch.optim.AdamW(
+        ours.parameters(),
+        lr=3.0e-4,
+        betas=(0.9, 0.95),
+        eps=1.0e-8,
+        weight_decay=1.0e-2,
+    )
     actual, metrics = ours.training_loss_encoded(**values)
     torch.testing.assert_close(metrics["loss_video"], reference_video_loss)
     torch.testing.assert_close(metrics["loss_action"], reference_action_loss)
     torch.testing.assert_close(
-        actual, reference_video_loss + reference_action_loss
+        actual, reference_loss
     )
+    reference_loss.backward()
     actual.backward()
-    assert ours.video_expert.patch_embedding.weight.grad is not None
-    assert ours.action_expert.action_encoder.weight.grad is not None
+    reference_parameters = {
+        **{
+            f"mot.mixtures.video.{name}": parameter
+            for name, parameter in video.named_parameters()
+        },
+        **{
+            f"mot.mixtures.action.{name}": parameter
+            for name, parameter in action_expert.named_parameters()
+        },
+        **{
+            f"proprio_encoder.{name}": parameter
+            for name, parameter in reference_proprio.named_parameters()
+        },
+    }
+    actual_parameters = dict(ours.named_parameters())
+    assert len(actual_parameters) == len(reference_parameters)
+    for actual_name, actual_parameter in actual_parameters.items():
+        reference_name = actual_name.replace(".linear.weight", ".weight").replace(
+            ".linear.bias", ".bias"
+        )
+        reference_parameter = reference_parameters[reference_name]
+        assert (actual_parameter.grad is None) == (reference_parameter.grad is None)
+        if actual_parameter.grad is not None:
+            torch.testing.assert_close(
+                actual_parameter.grad,
+                reference_parameter.grad,
+                atol=5.0e-5,
+                rtol=5.0e-5,
+            )
+
+    reference_optimizer.step()
+    actual_optimizer.step()
+    for actual_name, actual_parameter in actual_parameters.items():
+        reference_name = actual_name.replace(".linear.weight", ".weight").replace(
+            ".linear.bias", ".bias"
+        )
+        torch.testing.assert_close(
+            actual_parameter,
+            reference_parameters[reference_name],
+            atol=5.0e-5,
+            rtol=5.0e-5,
+        )
 
 
 @pytest.mark.parametrize(
-    ("video_length", "action_length", "first_frame_length"),
-    ((12, 8, 4), (20, 8, 4), (20, 8, 8)),
+    ("video_length", "action_length", "first_frame_length", "joint"),
+    (
+        (12, 8, 4, False),
+        (20, 8, 4, False),
+        (20, 8, 8, False),
+        (12, 8, 4, True),
+        (20, 8, 4, True),
+        (20, 8, 8, True),
+    ),
 )
 def test_fast_wam_flex_mask_predicate_matches_dense_contract(
     video_length,
     action_length,
     first_frame_length,
+    joint,
 ):
-    model = FastWAMModel(FastWAMConfig.tiny())
+    model = FastWAMModel(
+        replace(FastWAMConfig.tiny(), joint_action_video_attention=joint)
+    )
     expected = model.build_training_attention_mask(
         video_length,
         action_length,
@@ -411,15 +665,53 @@ def test_fast_wam_flex_mask_predicate_matches_dense_contract(
     actual = _fast_wam_training_mask_mod(
         video_length,
         first_frame_length,
+        joint,
     )(None, None, query_index, key_index)
     torch.testing.assert_close(actual, expected)
 
 
-def test_flex_training_matches_structured_sdpa_for_all_gradients():
+def test_robocasa_joint_action_queries_see_all_video_tokens():
+    model = FastWAMModel(
+        replace(FastWAMConfig.tiny(), joint_action_video_attention=True)
+    )
+    video_length = 12
+    action_length = 8
+    first_frame_length = 4
+    mask = model.build_training_attention_mask(
+        video_length,
+        action_length,
+        first_frame_length,
+        device=torch.device("cpu"),
+    )
+    assert mask[video_length:, :video_length].all()
+    assert mask[video_length:, video_length:].all()
+    assert not mask[:video_length, video_length:].any()
+
+
+def test_original_fastwam_action_queries_only_see_clean_video_tokens():
+    model = FastWAMModel(FastWAMConfig.tiny())
+    video_length = 12
+    action_length = 8
+    first_frame_length = 4
+    mask = model.build_training_attention_mask(
+        video_length,
+        action_length,
+        first_frame_length,
+        device=torch.device("cpu"),
+    )
+    action_rows = mask[video_length:]
+    assert action_rows[:, :first_frame_length].all()
+    assert not action_rows[:, first_frame_length:video_length].any()
+    assert action_rows[:, video_length:].all()
+
+
+@pytest.mark.parametrize("joint", (False, True))
+def test_flex_training_matches_structured_sdpa_for_all_gradients(joint):
     cfg = replace(
         FastWAMConfig.tiny(),
         training_attention_backend="structured_sdpa",
         training_kernel_mode="optimized",
+        joint_action_video_attention=joint,
     )
     values = _fixed_training_inputs(cfg)
     torch.manual_seed(31)
@@ -455,8 +747,12 @@ def test_flex_training_matches_structured_sdpa_for_all_gradients():
             )
 
 
-def test_optimized_structured_training_matches_reference_and_backward():
-    cfg = FastWAMConfig.tiny()
+@pytest.mark.parametrize("joint", (False, True))
+def test_optimized_structured_training_matches_reference_and_backward(joint):
+    cfg = replace(
+        FastWAMConfig.tiny(),
+        joint_action_video_attention=joint,
+    )
     values = _fixed_training_inputs(cfg)
     values["context_is_dense"] = True
     torch.manual_seed(37)

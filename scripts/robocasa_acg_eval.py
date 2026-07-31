@@ -869,6 +869,7 @@ def main() -> None:
             action_dim=args.fastwam_action_dim,
             proprio_dim=args.fastwam_proprio_dim,
             action_horizon=args.fastwam_action_horizon,
+            num_video_frames=args.fastwam_num_video_frames,
             num_inference_steps=args.fastwam_num_inference_steps,
             seed=args.seed,
         )

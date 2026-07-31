@@ -44,6 +44,7 @@ class FastWAMConfig:
     action: ActionExpertConfig = field(default_factory=ActionExpertConfig)
     proprio_dim: int = 8
     action_horizon: int = 32
+    num_video_frames: int = 9
     n_action_steps: int = 10
     image_size: tuple[int, int] = (224, 448)
     context_len: int = 128
@@ -64,6 +65,7 @@ class FastWAMConfig:
     spatial_downsample_factor: int = 16
     loss_lambda_video: float = 1.0
     loss_lambda_action: float = 1.0
+    joint_action_video_attention: bool = False
 
     def __post_init__(self) -> None:
         if self.video.num_layers != self.action.num_layers:
@@ -74,6 +76,8 @@ class FastWAMConfig:
             raise ValueError("Video and action experts must have the same attention head dimension.")
         if self.action.action_dim <= 0 or self.action_horizon <= 0:
             raise ValueError("Action dimensions and horizon must be positive.")
+        if self.num_video_frames <= 1 or self.num_video_frames % 4 != 1:
+            raise ValueError("num_video_frames must be > 1 and satisfy T % 4 == 1.")
         if self.training_attention_backend not in {"sdpa", "flex", "structured_sdpa"}:
             raise ValueError(
                 "training_attention_backend must be one of "
@@ -135,6 +139,7 @@ class FastWAMConfig:
             action=action,
             proprio_dim=int(raw.get("proprio_dim", 8)),
             action_horizon=int(raw.get("action_horizon", 32)),
+            num_video_frames=int(raw.get("num_video_frames", 9)),
             n_action_steps=int(raw.get("n_action_steps", 10)),
             image_size=image_size,
             context_len=int(raw.get("context_len", 128)),
@@ -153,6 +158,9 @@ class FastWAMConfig:
             spatial_downsample_factor=int(raw.get("spatial_downsample_factor", 16)),
             loss_lambda_video=float(raw.get("loss_lambda_video", 1.0)),
             loss_lambda_action=float(raw.get("loss_lambda_action", 1.0)),
+            joint_action_video_attention=bool(
+                raw.get("joint_action_video_attention", False)
+            ),
         )
 
     @classmethod
@@ -184,6 +192,7 @@ class FastWAMConfig:
             ),
             proprio_dim=5,
             action_horizon=8,
+            num_video_frames=9,
             n_action_steps=4,
             image_size=(32, 64),
             context_len=12,

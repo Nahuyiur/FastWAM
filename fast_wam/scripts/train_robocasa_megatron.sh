@@ -110,6 +110,7 @@ fi
   --fast-wam-proprio-dim 16 \
   --fast-wam-attention-backend "$ATTENTION_BACKEND" \
   --fast-wam-kernel-mode "$KERNEL_MODE" \
+  --fast-wam-joint-action-video-attention \
   --num-layers 30 \
   --hidden-size 3072 \
   --ffn-hidden-size 14336 \

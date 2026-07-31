@@ -509,11 +509,14 @@ class VideoExpert(nn.Module):
         patches = self.head(tokens, state["t"])
         pt, ph, pw = self.patch_size
         out_channels = patches.shape[-1] // (pt * ph * pw)
+        # The released Wan head flattens each patch as [pt, ph, pw, channel].
+        # Keeping channel before the patch axes silently permutes the predicted
+        # latent and corrupts iterative joint video/action denoising.
         patches = patches.view(
-            patches.shape[0], f, h, w, out_channels, pt, ph, pw
+            patches.shape[0], f, h, w, pt, ph, pw, out_channels
         )
         return (
-            patches.permute(0, 4, 1, 5, 2, 6, 3, 7)
+            patches.permute(0, 7, 1, 4, 2, 5, 3, 6)
             .reshape(patches.shape[0], out_channels, f * pt, h * ph, w * pw)
             .contiguous()
         )
@@ -622,8 +625,9 @@ class ActionExpert(nn.Module):
 def _fast_wam_training_mask_mod(
     video_sequence_length: int,
     video_tokens_per_frame: int,
+    joint_action_video_attention: bool = False,
 ):
-    """Return the exact no-future-leakage predicate used by Fast-WAM."""
+    """Return the selected FastWAM or RoboCasa FastWAMJoint mask predicate."""
 
     def mask_mod(batch, head, query_index, key_index):
         del batch, head
@@ -637,7 +641,11 @@ def _fast_wam_training_mask_mod(
             torch.where(
                 video_query,
                 video_key,
-                clean_key | ~video_key,
+                (
+                    torch.ones_like(video_key)
+                    if joint_action_video_attention
+                    else clean_key | ~video_key
+                ),
             ),
         )
 
@@ -648,6 +656,7 @@ def _fast_wam_flex_block_mask(
     video_sequence_length: int,
     action_sequence_length: int,
     video_tokens_per_frame: int,
+    joint_action_video_attention: bool,
     *,
     device: torch.device,
 ):
@@ -664,6 +673,7 @@ def _fast_wam_flex_block_mask(
         video_sequence_length,
         action_sequence_length,
         video_tokens_per_frame,
+        joint_action_video_attention,
     )
     block_mask = _FLEX_BLOCK_MASKS.get(cache_key)
     if block_mask is None:
@@ -671,6 +681,7 @@ def _fast_wam_flex_block_mask(
             _fast_wam_training_mask_mod(
                 video_sequence_length,
                 video_tokens_per_frame,
+                joint_action_video_attention,
             ),
             B=None,
             H=None,
@@ -770,12 +781,14 @@ class MoT(nn.Module):
         fp32_attention: bool,
         training_attention_backend: str,
         optimized_kernels: bool,
+        joint_action_video_attention: bool,
     ):
         super().__init__()
         self.mixtures = nn.ModuleDict({"video": video, "action": action})
         self.fp32_attention = fp32_attention
         self.training_attention_backend = training_attention_backend
         self.optimized_kernels = optimized_kernels
+        self.joint_action_video_attention = joint_action_video_attention
 
     def _prefill_layer(
         self,
@@ -961,16 +974,20 @@ class MoT(nn.Module):
                     None,
                     fp32_attention=False,
                 )
+                action_video_k = (
+                    video_k
+                    if self.joint_action_video_attention
+                    else video_k[:, :tokens_per_frame]
+                )
+                action_video_v = (
+                    video_v
+                    if self.joint_action_video_attention
+                    else video_v[:, :tokens_per_frame]
+                )
                 action_mixed = _masked_attention(
                     action_q,
-                    torch.cat(
-                        [video_k[:, :tokens_per_frame], action_k],
-                        dim=1,
-                    ),
-                    torch.cat(
-                        [video_v[:, :tokens_per_frame], action_v],
-                        dim=1,
-                    ),
+                    torch.cat([action_video_k, action_k], dim=1),
+                    torch.cat([action_video_v, action_v], dim=1),
                     action_block.self_attn.local_heads,
                     None,
                     fp32_attention=False,
@@ -988,6 +1005,7 @@ class MoT(nn.Module):
                         video_length,
                         action_tokens.shape[1],
                         tokens_per_frame,
+                        self.joint_action_video_attention,
                         device=q.device,
                     )
                     if self.training_attention_backend == "flex"
@@ -1082,6 +1100,7 @@ class FastWAMModel(MegatronModule):
             fp32_attention=cfg.fp32_attention,
             training_attention_backend=cfg.training_attention_backend,
             optimized_kernels=optimized_kernels,
+            joint_action_video_attention=cfg.joint_action_video_attention,
         )
         self.proprio_encoder = _Linear(
             cfg.proprio_dim,
@@ -1150,7 +1169,7 @@ class FastWAMModel(MegatronModule):
         *,
         device: torch.device,
     ) -> torch.Tensor:
-        """Build Fast-WAM's no-future-leakage MoT training mask."""
+        """Build the selected ordinary FastWAM or RoboCasa Joint mask."""
 
         total = video_sequence_length + action_sequence_length
         mask = torch.zeros((total, total), dtype=torch.bool, device=device)
@@ -1158,9 +1177,13 @@ class FastWAMModel(MegatronModule):
         # bidirectional over the whole video branch.
         mask[:video_tokens_per_frame, :video_tokens_per_frame] = True
         mask[video_tokens_per_frame:video_sequence_length, :video_sequence_length] = True
-        # Action queries read the clean first-frame anchor and all action tokens.
-        mask[video_sequence_length:, :video_tokens_per_frame] = True
+        # RoboCasa FastWAMJoint reads all jointly denoised video tokens. The
+        # original FastWAM route reads only the clean first-frame video tokens.
         mask[video_sequence_length:, video_sequence_length:] = True
+        if self.fast_wam_config.joint_action_video_attention:
+            mask[video_sequence_length:, :video_sequence_length] = True
+        else:
+            mask[video_sequence_length:, :video_tokens_per_frame] = True
         return mask
 
     def _video_loss_per_sample(
@@ -1366,7 +1389,7 @@ class FastWAMModel(MegatronModule):
         return loss, metrics
 
     @torch.no_grad()
-    def infer_action_encoded(
+    def infer_action_only_encoded(
         self,
         first_frame_latents: torch.Tensor,
         context: torch.Tensor,
@@ -1377,10 +1400,15 @@ class FastWAMModel(MegatronModule):
         num_inference_steps: int | None = None,
         sigma_shift: float | None = None,
     ) -> torch.Tensor:
-        """Return a normalized action chunk from already encoded Wan inputs."""
+        """Run the non-joint, first-frame-cached FastWAM inference variant."""
 
         self.eval()
         cfg = self.fast_wam_config
+        if cfg.joint_action_video_attention:
+            raise RuntimeError(
+                "infer_action_only_encoded is the ordinary FastWAM route; set "
+                "joint_action_video_attention=False or use infer_action_encoded."
+            )
         if first_frame_latents.ndim != 5 or first_frame_latents.shape[2] != 1:
             raise ValueError("first_frame_latents must be [B,C,1,H,W]")
         if context.ndim != 3 or context_mask.ndim != 2 or proprio.ndim != 2:
@@ -1422,6 +1450,123 @@ class FastWAMModel(MegatronModule):
             tokens = self.mot.forward_action_with_video_cache(action_state, video_cache)
             prediction = self.action_expert.post_dit(tokens)
             action = self.scheduler.step(prediction, timestep, action)
+        return action[0].detach().float().cpu()
+
+    @torch.no_grad()
+    def infer_action_encoded(
+        self,
+        first_frame_latents: torch.Tensor,
+        context: torch.Tensor,
+        context_mask: torch.Tensor,
+        proprio: torch.Tensor,
+        *,
+        seed: int | None = None,
+        num_inference_steps: int | None = None,
+        sigma_shift: float | None = None,
+        num_video_frames: int | None = None,
+    ) -> torch.Tensor:
+        """Run the RoboCasa baseline FastWAMJoint video/action denoising path."""
+
+        self.eval()
+        cfg = self.fast_wam_config
+        if not cfg.joint_action_video_attention:
+            raise RuntimeError(
+                "infer_action_encoded is the RoboCasa FastWAMJoint route; set "
+                "joint_action_video_attention=True or use infer_action_only_encoded."
+            )
+        if first_frame_latents.ndim != 5 or first_frame_latents.shape[2] != 1:
+            raise ValueError("first_frame_latents must be [B,C,1,H,W]")
+        if context.ndim != 3 or context_mask.ndim != 2 or proprio.ndim != 2:
+            raise ValueError("context/context_mask/proprio must be [B,L,D]/[B,L]/[B,P]")
+        if first_frame_latents.shape[0] != 1:
+            raise ValueError("Each TP replica handles one environment at a time; use DP for batching.")
+        frames = cfg.num_video_frames if num_video_frames is None else int(num_video_frames)
+        if frames <= 1 or frames % cfg.temporal_downsample_factor != 1:
+            raise ValueError(
+                "num_video_frames must be > 1 and satisfy "
+                f"T % {cfg.temporal_downsample_factor} == 1"
+            )
+
+        dtype = self.proprio_encoder.weight.dtype
+        device = self.proprio_encoder.weight.device
+        first_frame_latents = first_frame_latents.to(device=device, dtype=dtype)
+        context = context.to(device=device, dtype=dtype)
+        context_mask = context_mask.to(device=device, dtype=torch.bool)
+        proprio = proprio.to(device=device, dtype=dtype)
+        context, context_mask = self._append_proprio(context, context_mask, proprio)
+
+        latent_frames = (frames - 1) // cfg.temporal_downsample_factor + 1
+        noise_seed = cfg.inference_seed if seed is None else int(seed)
+        video_generator = torch.Generator(device="cpu").manual_seed(noise_seed)
+        action_generator = torch.Generator(device="cpu").manual_seed(noise_seed)
+        video = torch.randn(
+            (
+                1,
+                cfg.video.in_dim,
+                latent_frames,
+                first_frame_latents.shape[3],
+                first_frame_latents.shape[4],
+            ),
+            generator=video_generator,
+            device="cpu",
+            dtype=torch.float32,
+        ).to(device=device, dtype=dtype)
+        action = torch.randn(
+            (1, cfg.action_horizon, cfg.action.action_dim),
+            generator=action_generator,
+            device="cpu",
+            dtype=torch.float32,
+        ).to(device=device, dtype=dtype)
+        video[:, :, :1] = first_frame_latents
+
+        tp_group, tp_size, _ = _tp_info()
+        if tp_group is not None and tp_size > 1:
+            source = dist.get_global_rank(tp_group, 0)
+            dist.broadcast(video, src=source, group=tp_group)
+            dist.broadcast(action, src=source, group=tp_group)
+
+        steps = cfg.num_inference_steps if num_inference_steps is None else int(num_inference_steps)
+        shift = cfg.sigma_shift if sigma_shift is None else float(sigma_shift)
+        self.video_train_scheduler.set_timesteps(steps, shift=shift)
+        self.action_train_scheduler.set_timesteps(steps, shift=shift)
+        for video_timestep, action_timestep in zip(
+            self.video_train_scheduler.timesteps,
+            self.action_train_scheduler.timesteps,
+            strict=True,
+        ):
+            video_t = video_timestep.to(device=device, dtype=dtype).reshape(1)
+            action_t = action_timestep.to(device=device, dtype=dtype).reshape(1)
+            video_state = self.video_expert.pre_dit(video, video_t, context, context_mask)
+            action_state = self.action_expert.pre_dit(action, action_t, context, context_mask)
+            needs_dense_mask = cfg.training_attention_backend == "sdpa"
+            attention_mask = (
+                self.build_training_attention_mask(
+                    video_state["tokens"].shape[1],
+                    action_state["tokens"].shape[1],
+                    video_state["meta"]["tokens_per_frame"],
+                    device=device,
+                )
+                if needs_dense_mask
+                else None
+            )
+            video_tokens, action_tokens = self.mot.forward_joint(
+                video_state,
+                action_state,
+                attention_mask,
+            )
+            video_prediction = self.video_expert.post_dit(video_tokens, video_state)
+            action_prediction = self.action_expert.post_dit(action_tokens)
+            video = self.video_train_scheduler.step(
+                video_prediction,
+                video_timestep,
+                video,
+            )
+            action = self.action_train_scheduler.step(
+                action_prediction,
+                action_timestep,
+                action,
+            )
+            video[:, :, :1] = first_frame_latents
         return action[0].detach().float().cpu()
 
     @torch.no_grad()
