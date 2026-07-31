@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>长视频与一致性生成方案调研</title>
+  <style>
+    :root {
+      --bg: #f5f6f8;
+      --paper: #ffffff;
+      --ink: #202632;
+      --muted: #5d6877;
+      --line: #d8dde6;
+      --soft: #eef4f4;
+      --accent: #0f766e;
+      --accent-2: #7c3aed;
+      --warn: #a15c00;
+      --good: #147a45;
+      --shadow: 0 18px 48px rgba(32, 38, 50, .10);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.65;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 30px 22px 56px;
+    }
+    header {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      padding: 34px;
+      margin-bottom: 20px;
+    }
+    .kicker {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 4vw, 48px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+    .subtitle {
+      margin: 18px 0 0;
+      max-width: 900px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 22px;
+    }
+    .chip {
+      border: 1px solid var(--line);
+      background: var(--soft);
+      border-radius: 999px;
+      padding: 5px 11px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #334155;
+      white-space: nowrap;
+    }
+    nav {
+      border: 1px solid var(--line);
+      background: var(--paper);
+      border-radius: 12px;
+      padding: 14px 18px;
+      margin-bottom: 20px;
+    }
+    nav strong { display: block; margin-bottom: 8px; }
+    nav a {
+      display: inline-block;
+      margin: 4px 16px 4px 0;
+      font-weight: 700;
+      font-size: 14px;
+    }
+    section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 26px;
+      margin-bottom: 20px;
+    }
+    h2 {
+      margin: 0 0 16px;
+      font-size: 25px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 24px 0 8px;
+      font-size: 19px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+    p { margin: 0 0 14px; }
+    ul, ol { margin: 0 0 16px 22px; padding: 0; }
+    li { margin: 6px 0; }
+    code {
+      background: #eef1f4;
+      border-radius: 5px;
+      padding: 2px 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .92em;
+    }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: #edf7f6;
+      border-radius: 8px;
+      padding: 15px 16px;
+      margin: 16px 0;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin: 18px 0 4px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fbfcfe;
+      padding: 16px;
+    }
+    .card h3 { margin-top: 0; }
+    .card p { color: var(--muted); font-size: 14px; }
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      margin: 16px 0;
+    }
+    table {
+      width: 100%;
+      min-width: 850px;
+      border-collapse: collapse;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+    }
+    th {
+      background: #eef4f4;
+      color: #293544;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      font-size: 13px;
+    }
+    tr:last-child td { border-bottom: 0; }
+    .good { color: var(--good); font-weight: 800; }
+    .warn { color: var(--warn); font-weight: 800; }
+    .sources {
+      columns: 2;
+      column-gap: 38px;
+    }
+    .sources li { break-inside: avoid; }
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 18px;
+    }
+    @media (max-width: 900px) {
+      .wrap { padding: 18px 14px 40px; }
+      header, section { padding: 21px; }
+      .grid { grid-template-columns: 1fr; }
+      .sources { columns: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <p class="kicker">Research Note · 2026-05-19</p>
+      <h1>长视频与一致性生成方案调研</h1>
+      <p class="subtitle">
+        面向长时长、multi-shot、角色/物体/场景一致和世界状态保持，梳理闭源商业模型、开源模型、训练范式、推理扩展方法和现实创作工作流。
+      </p>
+      <div class="chips">
+        <span class="chip">Long Video</span>
+        <span class="chip">Multi-Shot</span>
+        <span class="chip">World Consistency</span>
+        <span class="chip">Visual Memory</span>
+        <span class="chip">Diffusion Forcing</span>
+        <span class="chip">FramePack</span>
+      </div>
+    </header>
+
+    <nav>
+      <strong>快速跳转</strong>
+      <a href="#summary">结论</a>
+      <a href="#dimensions">一致性维度</a>
+      <a href="#taxonomy">技术路线</a>
+      <a href="#systems">方案矩阵</a>
+      <a href="#wan">Wan 启发</a>
+      <a href="#sources">Sources</a>
+    </nav>
+
+    <section id="summary">
+      <h2>Executive Summary</h2>
+      <div class="callout">
+        “长 video 且一致”不是单一能力：闭源产品靠 scaling + reference workflow，开源路线靠 diffusion forcing / context packing / memory bank，生产工作流仍大量依赖 keyframe storyboard 和逐 shot I2V。
+      </div>
+      <div class="grid">
+        <article class="card">
+          <h3>闭源产品级</h3>
+          <p>Sora 2、Veo 3.1、Runway Gen-4、Seedance 2.0、Kling 系列，产品能力强但训练细节少。</p>
+        </article>
+        <article class="card">
+          <h3>开源长视频</h3>
+          <p>SkyReels-V2、FramePack、LongVie/LongVie2 适合本地研究和工程拆解。</p>
+        </article>
+        <article class="card">
+          <h3>研究范式</h3>
+          <p>LCT、StoryMem、LoViC、MoC、StreamingT2V、FreeLong/FreeNoise 解决不同一致性瓶颈。</p>
+        </article>
+        <article class="card">
+          <h3>生产工作流</h3>
+          <p>reference image、character sheet、keyframe storyboard、I2V per-shot、edit stitching 仍是最可靠路线。</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="dimensions">
+      <h2>Consistency Dimensions</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>维度</th><th>要求</th><th>常见失败</th></tr></thead>
+          <tbody>
+            <tr><td>角色身份</td><td>跨角度、镜头、光照保持脸、体型、服装</td><td>变脸、发型变化、服装漂移</td></tr>
+            <tr><td>物体一致</td><td>道具、产品、车辆、logo、纹理保持</td><td>形状/颜色变化，细节丢失</td></tr>
+            <tr><td>场景布局</td><td>房间、街道、地形、镜头空间关系稳定</td><td>空间翻转、背景重排</td></tr>
+            <tr><td>动作连贯</td><td>速度、方向、接触关系连续</td><td>运动跳变、物理不成立</td></tr>
+            <tr><td>世界状态</td><td>前一镜头发生的变化在后续保持</td><td>移动/破坏过的物体复原</td></tr>
+            <tr><td>长程记忆</td><td>多镜头后仍能找回同一实体</td><td>recurrence distance 越长 identity 越差</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="taxonomy">
+      <h2>Taxonomy</h2>
+      <h3>1. Scale Native Long-Context Transformer</h3>
+      <p>代表 Sora、Sora 2、Veo、Seedance 2.0。通过大规模可变时长、分辨率、宽高比训练，让 object permanence、3D consistency、long-range coherence 从 scale 中出现。上限高，但训练细节通常闭源。</p>
+      <h3>2. Reference / Ingredient Consistency Workflow</h3>
+      <p>代表 Runway Gen-4、Veo 3.1 Ingredients。用 reference images / ingredient images 锚定角色、物体、背景和风格，是目前商业创作最实用的跨镜头一致性接口。</p>
+      <h3>3. Autoregressive Chunking With Memory</h3>
+      <p>代表 FramePack、SkyReels-V2、StreamingT2V、StoryMem、FilmWeaver、ShotStream。长视频被拆成 chunk 或 shot，下一段生成时带上 compressed context、keyframes、global memory 或 local cache。</p>
+      <h3>4. Long-Context Tuning / Scene-Level Attention</h3>
+      <p>代表 Long Context Tuning、LoViC、Mixture of Contexts。把 single-shot 模型扩成 scene-level model，让 attention 或 compressed context 跨多个 shots 建模。</p>
+      <h3>5. Training-Free Extension</h3>
+      <p>代表 FreeNoise、FreeLong、FreeLong++、Ouroboros-Diffusion。通过 noise rescheduling、sliding temporal attention、frequency blending 等推理技巧扩展短视频模型，成本低但上限有限。</p>
+      <h3>6. Storyboard / Keyframe / I2V Workflow</h3>
+      <p>先生成角色表、场景表、关键帧和镜头脚本，再逐 shot 做 I2V/extension，最后剪辑。这不是最优雅的模型能力，但目前最可靠。</p>
+    </section>
+
+    <section id="systems">
+      <h2>Comparison Matrix</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>方案</th><th>开放性</th><th>长度/场景</th><th>一致性核心机制</th><th>成熟度判断</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Sora / Sora 2</td><td>闭源</td><td>Sora 1 报告称 up to 1 min；Sora 2 强调 multi-shot</td><td>scaling, spacetime patches, world simulation</td><td><span class="good">产品级目标形态</span></td></tr>
+            <tr><td>Veo 3.1</td><td>闭源</td><td>multi-scene workflow</td><td>ingredient/reference consistency</td><td><span class="good">产品可用</span></td></tr>
+            <tr><td>Runway Gen-4</td><td>闭源</td><td>multi-shot narrative workflow</td><td>reference image, world consistency</td><td><span class="good">商业创作强</span></td></tr>
+            <tr><td>Seedance 1.0/2.0</td><td>闭源/报告开放</td><td>native multi-shot / multi-modal A/V</td><td>data curation, post-training, RLHF, unified architecture</td><td><span class="good">披露较多</span></td></tr>
+            <tr><td>SkyReels-V2</td><td>开源/开放权重</td><td>long/infinite-length film generation</td><td>diffusion forcing, MLLM caption, progressive training, RL</td><td><span class="good">开源重点方案</span></td></tr>
+            <tr><td>FramePack</td><td>开源</td><td>minute-level practical generation</td><td>fixed-length context packing, anti-drift sampling</td><td><span class="good">实践影响力高</span></td></tr>
+            <tr><td>LongVie2</td><td>开放报告/权重</td><td>up to 5 min</td><td>multimodal control, degradation-aware training, history-context guidance</td><td><span class="good">ultra-long route</span></td></tr>
+            <tr><td>Long Context Tuning</td><td>论文/项目</td><td>scene-level multi-shot</td><td>scene-level full attention, interleaved 3D position, async noise</td><td><span class="good">训练范式重要</span></td></tr>
+            <tr><td>StoryMem</td><td>论文/项目</td><td>minute-long storytelling</td><td>visual memory bank, latent concat, negative RoPE, LoRA</td><td><span class="good">multi-shot consistency 强</span></td></tr>
+            <tr><td>FreeNoise / FreeLong</td><td>论文/插件</td><td>16f -> 128f 等</td><td>training-free noise/attention/frequency tricks</td><td><span class="warn">sampler baseline</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="wan">
+      <h2>Implications For Wan-Based Work</h2>
+      <h3>短期路线：生产工作流</h3>
+      <ul>
+        <li>Wan 做 shot-level generation。</li>
+        <li>用 reference image / character sheet / fixed scene prompt anchors 维持一致。</li>
+        <li>按 keyframe storyboard 逐 shot I2V，再做 transition smoothing 和 edit stitching。</li>
+      </ul>
+      <h3>中期路线：Wan Long-Video Extension</h3>
+      <ul>
+        <li>加 chunk autoregressive generation、context frame encoder、first-frame/keyframe memory。</li>
+        <li>加 latent memory bank、cross-chunk noise schedule、history-context guidance。</li>
+        <li>把 DCP、SP/CP、recompute 和 long-video dataset resume 一起验证。</li>
+      </ul>
+      <h3>长期路线：Multi-Shot Wan Foundation</h3>
+      <ul>
+        <li>数据需要 scene-level multi-shot videos，带 shot boundary、角色 ID、scene ID、camera language、dense captions。</li>
+        <li>模型需要 scene-level attention 或 memory retrieval，支持 per-shot prompt + global story prompt。</li>
+        <li>训练建议走 single-shot pretrain -> multi-shot long context tuning -> autoregressive/memory fine-tune -> preference/RL。</li>
+      </ul>
+    </section>
+
+    <section id="sources">
+      <h2>Sources</h2>
+      <ul class="sources">
+        <li><a href="https://openai.com/index/video-generation-models-as-world-simulators/">OpenAI Sora report</a></li>
+        <li><a href="https://openai.com/index/sora-2/">OpenAI Sora 2 release</a></li>
+        <li><a href="https://blog.google/innovation-and-ai/technology/ai/veo-3-1-ingredients-to-video/">Google Veo 3.1 Ingredients update</a></li>
+        <li><a href="https://runwayml.com/research/introducing-runway-gen-4">Runway Gen-4 world consistency</a></li>
+        <li><a href="https://arxiv.org/abs/2506.09113">Seedance 1.0</a></li>
+        <li><a href="https://arxiv.org/abs/2604.14148">Seedance 2.0</a></li>
+        <li><a href="https://arxiv.org/abs/2504.13074">SkyReels-V2</a></li>
+        <li><a href="https://github.com/SkyworkAI/SkyReels-V2">SkyReels-V2 GitHub</a></li>
+        <li><a href="https://arxiv.org/abs/2504.12626">FramePack</a></li>
+        <li><a href="https://github.com/lllyasviel/FramePack">FramePack GitHub</a></li>
+        <li><a href="https://arxiv.org/abs/2512.13604">LongVie2</a></li>
+        <li><a href="https://arxiv.org/abs/2503.10589">Long Context Tuning</a></li>
+        <li><a href="https://arxiv.org/abs/2512.19539">StoryMem</a></li>
+        <li><a href="https://arxiv.org/abs/2512.11274">FilmWeaver</a></li>
+        <li><a href="https://arxiv.org/abs/2403.14773">StreamingT2V</a></li>
+        <li><a href="https://proceedings.neurips.cc/paper_files/paper/2024/hash/ed67dff7cb96e7e86c4d91c0d5db49bb-Abstract-Conference.html">FreeLong</a></li>
+      </ul>
+    </section>
+
+    <footer>Static research note for Wan long-video consistency planning. No external CSS or JavaScript required.</footer>
+  </div>
+</body>
+</html>

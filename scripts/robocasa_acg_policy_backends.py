@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import atexit
+import os
 import pathlib
 import sys
 from typing import Any
@@ -194,3 +196,195 @@ class FastWAMPolicyClient:
             tiled=False,
         )
         return {"actions": self._denormalize_action(out["action"])}
+
+
+class MegatronFastWAMPolicyClient:
+    """Single-replica RoboCasa policy backed by a reshardable Megatron DCP."""
+
+    DEFAULT_PROMPT = FastWAMPolicyClient.DEFAULT_PROMPT
+
+    def __init__(
+        self,
+        *,
+        repo: str,
+        checkpoint: str,
+        vae_checkpoint: str,
+        norm_stats: str,
+        text_cache: str,
+        device: str,
+        mixed_precision: str,
+        action_dim: int,
+        proprio_dim: int,
+        action_horizon: int,
+        num_inference_steps: int,
+        seed: int,
+    ):
+        import torch
+        from dataclasses import replace
+
+        os.environ.setdefault("GIT_PYTHON_REFRESH", "quiet")
+        repo_path = pathlib.Path(repo).resolve()
+        if str(repo_path) not in sys.path:
+            sys.path.insert(0, str(repo_path))
+        src_path = repo_path / "src"
+        if str(src_path) not in sys.path:
+            sys.path.insert(0, str(src_path))
+
+        from fast_wam.checkpoint import load_megatron_dcp
+        from fast_wam.config import FastWAMConfig
+        from fast_wam.distributed import initialize, transformer_config
+        from fast_wam.model import FastWAMModel
+        from fast_wam.train.vae import WanVideoVAE38Encoder
+        from fastwam.datasets.lerobot.utils.normalizer import (
+            LinearNormalizer,
+            load_dataset_stats_from_json,
+        )
+
+        if device not in {"cuda", "cuda:0"}:
+            raise ValueError(
+                "Megatron RoboCasa eval isolates one process per visible GPU; "
+                f"expected cuda:0, got {device!r}"
+            )
+        if mixed_precision not in {"bf16", "fp32", "float32"}:
+            raise ValueError(
+                "Megatron RoboCasa eval supports mixed_precision in "
+                f"{{'bf16', 'fp32', 'float32'}}, got {mixed_precision!r}"
+            )
+        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+        os.environ.setdefault("MASTER_PORT", "29591")
+        os.environ.setdefault("RANK", "0")
+        os.environ.setdefault("LOCAL_RANK", "0")
+        os.environ.setdefault("WORLD_SIZE", "1")
+        self.torch = torch
+        self._closed = False
+        initialize(1)
+        atexit.register(self.close)
+
+        dtype = torch.bfloat16 if mixed_precision == "bf16" else torch.float32
+        base = FastWAMConfig()
+        self.config = replace(
+            base,
+            action=replace(base.action, action_dim=int(action_dim)),
+            proprio_dim=int(proprio_dim),
+            action_horizon=int(action_horizon),
+            num_inference_steps=int(num_inference_steps),
+            inference_seed=int(seed),
+        )
+        self.model = FastWAMModel(
+            self.config,
+            transformer_config(self.config, 1, dtype),
+        ).to(device=torch.device("cuda", 0), dtype=dtype)
+        load_megatron_dcp(self.model, checkpoint)
+        self.model.eval()
+        self.vae = WanVideoVAE38Encoder.from_pretrained(
+            vae_checkpoint,
+            device=torch.device("cuda", 0),
+            dtype=dtype,
+        )
+        self.dtype = dtype
+        self.text_cache = pathlib.Path(text_cache)
+        self.context_len = self.config.context_len
+        self.text_encoder_id = "wan22ti2v5b"
+        self.seed = int(seed)
+        self.action_dim = int(action_dim)
+        self.action_horizon = int(action_horizon)
+
+        shape_meta = {
+            "images": [],
+            "action": [{"key": "default", "raw_shape": int(action_dim), "shape": int(action_dim)}],
+            "state": [{"key": "default", "raw_shape": int(proprio_dim), "shape": int(proprio_dim)}],
+        }
+        self.normalizer = LinearNormalizer(
+            shape_meta=shape_meta,
+            use_stepwise_action_norm=False,
+            default_mode="min/max",
+            exception_mode={},
+            stats=load_dataset_stats_from_json(str(norm_stats)),
+        )
+
+    def _prompt_for_cache(self, task_prompt: str | None) -> str:
+        prompt = str(task_prompt or "")
+        if prompt.startswith("A video recorded from a robot's point of view"):
+            return prompt
+        return self.DEFAULT_PROMPT.format(task=prompt)
+
+    def _load_text_context(self, prompt: str):
+        import hashlib
+
+        hashed = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        path = self.text_cache / f"{hashed}.t5_len{self.context_len}.{self.text_encoder_id}.pt"
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Missing FastWAM text cache for prompt={prompt!r}: {path}"
+            )
+        payload = self.torch.load(path, map_location="cpu", weights_only=True)
+        context = payload["context"]
+        mask = payload["mask"]
+        expected_context = (self.context_len, self.config.video.text_dim)
+        if context.shape != expected_context or mask.shape != (self.context_len,):
+            raise ValueError(
+                f"Invalid text cache payload in {path}: "
+                f"context={tuple(context.shape)} mask={tuple(mask.shape)}"
+            )
+        context = context.to(device="cuda:0", dtype=self.dtype).unsqueeze(0)
+        mask = mask.to(device="cuda:0", dtype=self.torch.bool).unsqueeze(0)
+        context = context.clone()
+        context[~mask] = 0
+        return context, self.torch.ones_like(mask, dtype=self.torch.bool)
+
+    def _normalize_state(self, state: np.ndarray):
+        value = self.torch.as_tensor(state, dtype=self.torch.float32).reshape(1, -1)
+        return self.normalizer.normalizers["state"]["default"].forward(value).to(
+            device="cuda:0", dtype=self.dtype
+        )
+
+    def _denormalize_action(self, action):
+        value = self.torch.as_tensor(action, dtype=self.torch.float32)
+        return self.normalizer.normalizers["action"]["default"].backward(value).cpu().numpy()
+
+    def _encode_image(self, left_image: np.ndarray, wrist_image: np.ndarray):
+        merged = np.concatenate(
+            [convert_to_uint8(left_image), convert_to_uint8(wrist_image)],
+            axis=1,
+        )
+        video = self.torch.from_numpy(np.asarray(merged, dtype=np.float32))
+        video = video.to(device="cuda:0", dtype=self.dtype) * (2.0 / 255.0) - 1.0
+        video = video.permute(2, 0, 1).unsqueeze(0).unsqueeze(2).contiguous()
+        return self.vae.encode_normalized_video(video)
+
+    def infer(self, element: dict[str, Any]) -> dict[str, Any]:
+        context, context_mask = self._load_text_context(
+            self._prompt_for_cache(element.get("prompt"))
+        )
+        latent = self._encode_image(
+            element["observation/base_image"],
+            element["observation/wrist_image"],
+        )
+        proprio = self._normalize_state(
+            np.asarray(element["observation/state"], dtype=np.float32)
+        )
+        actions = self.model.infer_action_encoded(
+            latent,
+            context,
+            context_mask,
+            proprio,
+            seed=self.seed,
+            num_inference_steps=self.config.num_inference_steps,
+        )
+        actions = self._denormalize_action(actions)
+        expected = (self.action_horizon, self.action_dim)
+        if actions.shape != expected:
+            raise ValueError(
+                f"Megatron action shape mismatch: expected={expected} got={actions.shape}"
+            )
+        if not np.isfinite(actions).all():
+            raise FloatingPointError("Megatron policy produced non-finite actions")
+        return {"actions": actions}
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        dist = self.torch.distributed
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()

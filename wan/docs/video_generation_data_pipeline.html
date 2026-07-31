@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video Generation 数据管线与清洗策略调研</title>
+  <style>
+    :root {
+      --bg: #f5f7fa;
+      --paper: #ffffff;
+      --ink: #1f2937;
+      --muted: #5d6878;
+      --line: #dbe1ea;
+      --soft: #edf3f8;
+      --accent: #0f6f7f;
+      --accent2: #8b5a14;
+      --green: #167047;
+      --shadow: 0 18px 48px rgba(31, 41, 55, .10);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.68;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .shell { max-width: 1180px; margin: 0 auto; padding: 34px 24px 60px; }
+    header {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 34px;
+      margin-bottom: 22px;
+    }
+    .eyebrow { margin: 0 0 10px; color: var(--accent); font-size: 13px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(30px, 4vw, 48px); line-height: 1.12; letter-spacing: 0; }
+    .subtitle { max-width: 950px; margin: 18px 0 0; color: var(--muted); font-size: 17px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+    .tag { border: 1px solid var(--line); background: var(--soft); border-radius: 999px; padding: 5px 11px; font-size: 13px; color: var(--muted); }
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      margin: 0 0 22px;
+      background: rgba(245, 247, 250, .92);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--line);
+      padding: 10px 0;
+    }
+    nav .links { max-width: 1180px; margin: 0 auto; padding: 0 24px; display: flex; gap: 10px; flex-wrap: wrap; }
+    nav a { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px; background: var(--paper); font-size: 13px; }
+    section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 26px;
+      margin: 18px 0;
+    }
+    h2 { margin: 0 0 14px; font-size: 25px; line-height: 1.24; }
+    h3 { margin: 24px 0 10px; font-size: 19px; }
+    p { margin: 10px 0; }
+    ul, ol { padding-left: 22px; }
+    li { margin: 7px 0; }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: #eef7f8;
+      padding: 14px 16px;
+      border-radius: 10px;
+      margin: 16px 0;
+    }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .card { border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: #fbfcfe; }
+    .card h3 { margin-top: 0; }
+    .table-wrap { overflow-x: auto; margin: 14px 0; }
+    table { width: 100%; border-collapse: collapse; min-width: 760px; }
+    th, td { border: 1px solid var(--line); padding: 10px 12px; vertical-align: top; }
+    th { background: var(--soft); text-align: left; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { overflow-x: auto; background: #111827; color: #e5e7eb; border-radius: 10px; padding: 16px; }
+    .source-list td:first-child { white-space: nowrap; font-weight: 700; }
+    @media (max-width: 780px) {
+      .grid { grid-template-columns: 1fr; }
+      header, section { padding: 22px; }
+      .shell { padding-left: 16px; padding-right: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="links">
+      <a href="#summary">结论</a>
+      <a href="#pipeline">工业管线</a>
+      <a href="#papers">数据论文</a>
+      <a href="#reports">基座报告</a>
+      <a href="#filtering">清洗策略</a>
+      <a href="#captioning">Caption</a>
+      <a href="#wan">Wan 落地</a>
+      <a href="#sources">来源</a>
+    </div>
+  </nav>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">Research · 2026-05-19</p>
+      <h1>Video Generation 数据管线与清洗策略调研</h1>
+      <p class="subtitle">调研工业级 video generation 数据配方、清洗、标注、过滤、采样和训练阶段数据组织。重点覆盖 Sora、SVD、Movie Gen、Open-Sora Plan、HunyuanVideo、Wan、Cosmos/NeMo Curator，以及 Panda-70M、VidGen-1M、OpenVid-1M 等数据论文。</p>
+      <div class="meta">
+        <span class="tag">video data factory</span>
+        <span class="tag">captioning</span>
+        <span class="tag">quality filtering</span>
+        <span class="tag">Wan training</span>
+      </div>
+    </header>
+
+    <section id="summary">
+      <h2>Executive Summary</h2>
+      <div class="callout">
+        高质量 video generation 的差异已经从“模型是否足够大”扩展到“数据工厂是否足够强”。头部报告普遍使用多阶段 data curation：shot splitting、motion/quality/aesthetic/OCR/watermark filtering、dense recaption、semantic dedup、concept balancing、duration/resolution bucketing 和 high-quality SFT。
+      </div>
+      <p>可信来源分三类：工业基座报告、数据集/清洗论文、以及 NVIDIA NeMo Curator / Cosmos Curate 这类工程工具链。SVD 系统研究 data curation 对 video LDM 的影响；Movie Gen 和 Open-Sora Plan 公开了相当具体的过滤阶段；Panda-70M、VidGen-1M、OpenVid-1M 直接把视频数据质量和 caption 质量作为研究对象。</p>
+      <ul>
+        <li><strong>Pretrain:</strong> 大而杂，但必须经过基本质量、运动、去重和分桶。</li>
+        <li><strong>SFT:</strong> 小而精，dense caption 和人工/强模型筛选比数量更重要。</li>
+        <li><strong>Long video:</strong> 需要 long-take、multi-shot、entity recurrence、camera path 和 structured captions。</li>
+        <li><strong>Audio-video:</strong> 还要加 audio quality、A/V sync、speech/lip、diegetic/non-diegetic 分类。</li>
+      </ul>
+    </section>
+
+    <section id="pipeline">
+      <h2>Canonical Industrial Pipeline</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>阶段</th><th>目标</th><th>典型做法</th><th>产物</th></tr></thead>
+          <tbody>
+            <tr><td>Source registry</td><td>记录授权和风险</td><td>source、license、region、language、privacy/safety 标签</td><td>source manifest</td></tr>
+            <tr><td>Ingest & probe</td><td>读元信息</td><td>ffprobe、GPU decoder、object-store manifest</td><td>duration/fps/size/audio tracks</td></tr>
+            <tr><td>Shot splitting</td><td>去多场景拼接</td><td>PySceneDetect、FFmpeg、LPIPS/ImageBind/CLIP 校正</td><td>single-shot clips</td></tr>
+            <tr><td>Quality filtering</td><td>去低画质</td><td>resolution、bitrate、blur、DOVER、aesthetic score</td><td>quality scores</td></tr>
+            <tr><td>Motion filtering</td><td>保留有效动态</td><td>optical flow、VMAF motion、motion vectors、jitter detector</td><td>motion scores</td></tr>
+            <tr><td>Artifact filtering</td><td>去广告、水印、边框、字幕</td><td>OCR、watermark/logo detector、border/grid detector</td><td>artifact tags</td></tr>
+            <tr><td>Captioning</td><td>建 text-video alignment</td><td>VLM/video captioner、ASR/OCR、LLM recaption</td><td>dense captions</td></tr>
+            <tr><td>Dedup & resampling</td><td>降重复并控分布</td><td>perceptual hash、embedding clustering、concept balancing</td><td>cluster id / sampling weight</td></tr>
+            <tr><td>Bucketing</td><td>提升训练效率</td><td>resolution/aspect/duration/FPS latent-shape buckets</td><td>bucketed shards</td></tr>
+            <tr><td>SFT / preference</td><td>提升最终可用性</td><td>HQ subset、人评、A/B、reward labels</td><td>finetune/preference set</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="papers">
+      <h2>Data-Centric Papers</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Stable Video Diffusion</h3>
+          <p>系统研究 video LDM 的三阶段训练和 data curation。使用 cut detection、synthetic captions、CLIP/OCR/optical-flow/aesthetic filtering，并通过人类偏好比较不同筛选子集。</p>
+        </div>
+        <div class="card">
+          <h3>Panda-70M</h3>
+          <p>从 HD-VILA-100M 中筛出高分辨率长视频，做 semantics-aware splitting；多个 cross-modality teacher 产 caption，再用人工小集训练 retrieval model 选最佳 caption。</p>
+        </div>
+        <div class="card">
+          <h3>VidGen-1M</h3>
+          <p>明确指出低 caption 质量、低视频质量、temporal inconsistency、data imbalance 会限制 T2V。提出 coarse curation、captioning、fine curation。</p>
+        </div>
+        <div class="card">
+          <h3>OpenVid-1M</h3>
+          <p>ICLR 2025，强调 high-quality million-scale 和 expressive captions；另外构建 433K 1080p HD subset，说明质量和文本信息利用比盲目规模更关键。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="reports">
+      <h2>Foundation Reports</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>模型/系统</th><th>公开的数据策略</th><th>工程启发</th></tr></thead>
+          <tbody>
+            <tr><td>Sora</td><td>variable duration/resolution/aspect，spacetime patches，descriptive recaptioning</td><td>保留 native aspect 和时长；dense caption 是 prompt following 上限</td></tr>
+            <tr><td>Movie Gen</td><td>visual/motion/content filtering + captioning；4-16s single-shot；duration/FPS/aspect buckets</td><td>pretrain set 来自大池子的严格过滤；bucket 必须和 latent shape 对齐</td></tr>
+            <tr><td>Open-Sora Plan</td><td>LPIPS jump cut/motion、OCR crop、LAION aesthetic、DOVER technical、Qwen2-VL/InternVL captions</td><td>OCR 不一定全删；technical 和 aesthetic 是不同维度</td></tr>
+            <tr><td>HunyuanVideo</td><td>data curation、progressive scaling/training、caption model post-training</td><td>小参数开源模型尤其依赖数据质量和 post-training</td></tr>
+            <tr><td>Wan</td><td>large-scale data curation、billions images/videos、automated evaluation</td><td>复刻官方质量需要数据、caption、评测同时补齐</td></tr>
+            <tr><td>Cosmos / NeMo Curator</td><td>split、transcode、filter、embedding、caption、semantic dedup，可扩到 PB/100PB 级</td><td>数据管线要流式/分布式，不应靠单机脚本堆大目录</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="filtering">
+      <h2>Filtering Strategy</h2>
+      <p>过滤不应只写 pass/fail，而应保留可审计分数。质量、运动、OCR、水印、去重、语义分布都要进入 metadata。</p>
+      <ul>
+        <li><strong>Video quality:</strong> min side、bitrate、blur、noise、DOVER technical、aesthetic score。</li>
+        <li><strong>Motion:</strong> optical flow、VMAF motion、static detector、jitter detector；过静和过快都不适合主训练。</li>
+        <li><strong>Temporal consistency:</strong> shot boundary + LPIPS/CLIP/ImageBind 二次校验。</li>
+        <li><strong>OCR/watermark:</strong> 边缘字幕可 crop；中心文字可能是语义，不应无脑删除。</li>
+        <li><strong>Dedup:</strong> exact/near duplicate 与 semantic over-representation 分开处理。</li>
+      </ul>
+    </section>
+
+    <section id="captioning">
+      <h2>Captioning Strategy</h2>
+      <p>工业可用 caption 不是一个字符串，而是结构化描述：global caption、dense caption、segment captions、camera、style、entities、actions、OCR、安全标签和质量分数。</p>
+      <pre><code>{
+  "global_caption": "...",
+  "segment_captions": [{"start": 0.0, "end": 2.0, "caption": "..."}],
+  "camera": {"motion": "slow pan left", "shot": "medium shot"},
+  "quality": {"aesthetic": 6.1, "technical": 0.83, "motion": 0.42},
+  "bucket": {"aspect": "16:9", "duration": "8s", "resolution": "720p"}
+}</code></pre>
+      <p>Panda-70M 的经验很关键：开放域视频上没有单个 captioner 足够稳。video caption model、image VLM、ASR/OCR、LLM recaption 和人工小集训练的 caption ranker 应组合使用。</p>
+    </section>
+
+    <section id="wan">
+      <h2>Implications For Wan</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Smoke / Overfit Layer</h3>
+          <p>1 条真实短视频，保留原 fps/resolution，派生标准化 mp4、latent cache、metadata json 和人工 caption，用来验证 loader、VAE、ckpt、TP/CP/recompute。</p>
+        </div>
+        <div class="card">
+          <h3>Small Curated SFT</h3>
+          <p>100-1000 条 HQ 样本，做 scene split、OCR/watermark/motion/quality 过滤，VLM caption 后人工抽查。</p>
+        </div>
+        <div class="card">
+          <h3>Medium Pretrain</h3>
+          <p>10K-1M clips，按 source/domain 分布写 manifest，保存 quality/motion/aesthetic/OCR/alignment scores 和 latent/text embedding cache。</p>
+        </div>
+        <div class="card">
+          <h3>Preference Layer</h3>
+          <p>固定 prompt suite，比较 base Wan 与 finetuned Wan 的 paired outputs，审查 motion、identity、prompt adherence 和 temporal flicker。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="sources">
+      <h2>Sources</h2>
+      <div class="table-wrap">
+        <table class="source-list">
+          <tbody>
+            <tr><td><a href="https://openai.com/research/video-generation-models-as-world-simulators">Sora</a></td><td>Variable duration/resolution/aspect 和 video recaptioning。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2311.15127">Stable Video Diffusion</a></td><td>系统研究 video data curation 和 staged training。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2410.13720">Movie Gen</a></td><td>工业级 visual/motion/content filtering、captioning、bucket。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2412.00131">Open-Sora Plan</a></td><td>LPIPS jump cut、OCR crop、aesthetic、DOVER、captioning。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2412.03603">HunyuanVideo</a></td><td>Open video foundation model framework with curation/training/infrastructure。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2503.20314">Wan</a></td><td>Large-scale curation and scaling for open video generation。</td></tr>
+            <tr><td><a href="https://docs.nvidia.com/nemo/curator/curate-video">NeMo Curator</a></td><td>工业 video curation stages and scalable processing。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2402.19479">Panda-70M</a></td><td>Multi-teacher captioning and semantic splitting。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2408.02629">VidGen-1M</a></td><td>Coarse-to-fine curation and detailed captions。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2407.02371">OpenVid-1M</a></td><td>High-quality million-scale T2V dataset。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

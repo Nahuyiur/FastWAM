@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video-Audio 联合生成基座模型综合方案</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --paper: #ffffff;
+      --ink: #1f2937;
+      --muted: #617080;
+      --line: #d8dee8;
+      --soft: #eef4f7;
+      --accent: #146c78;
+      --accent2: #8a4f16;
+      --green: #197047;
+      --red: #a23a3a;
+      --shadow: 0 18px 52px rgba(31, 41, 55, .10);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.66;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .shell { max-width: 1200px; margin: 0 auto; padding: 34px 24px 64px; }
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      border-bottom: 1px solid var(--line);
+      background: rgba(246, 247, 249, .93);
+      backdrop-filter: blur(10px);
+    }
+    nav .links { max-width: 1200px; margin: 0 auto; padding: 11px 24px; display: flex; gap: 10px; flex-wrap: wrap; }
+    nav a { background: var(--paper); border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px; font-size: 13px; }
+    header {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      padding: 36px;
+      margin-bottom: 22px;
+    }
+    .eyebrow { margin: 0 0 10px; color: var(--accent); font-size: 13px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(30px, 4vw, 48px); line-height: 1.12; letter-spacing: 0; }
+    .subtitle { max-width: 980px; color: var(--muted); margin: 18px 0 0; font-size: 17px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+    .tag { border: 1px solid var(--line); background: var(--soft); border-radius: 999px; padding: 5px 11px; font-size: 13px; color: var(--muted); }
+    section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      padding: 26px;
+      margin: 18px 0;
+    }
+    h2 { margin: 0 0 14px; font-size: 25px; line-height: 1.24; }
+    h3 { margin: 22px 0 10px; font-size: 19px; }
+    p { margin: 10px 0; }
+    ul, ol { padding-left: 22px; }
+    li { margin: 7px 0; }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: #eef8f8;
+      padding: 14px 16px;
+      border-radius: 10px;
+      margin: 16px 0;
+    }
+    .warn { border-left-color: var(--accent2); background: #fff6e8; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card { border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: #fbfcfe; }
+    .card h3 { margin-top: 0; }
+    .table-wrap { overflow-x: auto; margin: 14px 0; }
+    table { width: 100%; border-collapse: collapse; min-width: 780px; }
+    th, td { border: 1px solid var(--line); padding: 10px 12px; vertical-align: top; }
+    th { background: var(--soft); text-align: left; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { overflow-x: auto; background: #111827; color: #e5e7eb; border-radius: 10px; padding: 16px; }
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 12px;
+      align-items: stretch;
+      margin: 18px 0;
+    }
+    .flow .box { border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: #fbfcfe; }
+    .flow .arrow { align-self: center; color: var(--accent); font-weight: 800; }
+    .source-list td:first-child { white-space: nowrap; font-weight: 700; }
+    @media (max-width: 860px) {
+      .grid, .three, .flow { grid-template-columns: 1fr; }
+      .flow .arrow { display: none; }
+      header, section { padding: 22px; }
+      .shell { padding-left: 16px; padding-right: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="links">
+      <a href="#summary">方案</a>
+      <a href="#capabilities">任务</a>
+      <a href="#data">数据</a>
+      <a href="#model">模型</a>
+      <a href="#training">训练</a>
+      <a href="#distributed">分布式</a>
+      <a href="#eval">评测</a>
+      <a href="#milestones">里程碑</a>
+      <a href="#sources">来源</a>
+    </div>
+  </nav>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">Recipe · 2026-05-19</p>
+      <h1>Video-Audio 联合生成基座模型综合方案</h1>
+      <p class="subtitle">基于 Sora 2、Veo 3、Seedance 1.5 pro、LTX-2、Movie Gen Audio、UniVerse-1、JavisDiT++、HunyuanVideo-Foley 和 MMAudio 的公开资料，整理一个可工程落地的 video-audio joint foundation model 数据、模型、训练和评测配方。</p>
+      <div class="meta">
+        <span class="tag">Wan-based</span>
+        <span class="tag">dual-stream DiT</span>
+        <span class="tag">audio-video data</span>
+        <span class="tag">AV-DPO</span>
+      </div>
+    </header>
+
+    <section id="summary">
+      <h2>Executive Summary</h2>
+      <div class="callout">
+        推荐路线：以 Wan 类 video DiT 为视觉主干，加入较小 audio stream 和双向 cross-modal fusion；先训稳 V2A/T2A，再逐步解冻到 native T2AV，最后用 SFT + AV-DPO/RLHF 对齐同步、音质、画质和 prompt following。
+      </div>
+      <div class="grid three">
+        <div class="card">
+          <h3>闭源 native A/V</h3>
+          <p>Sora 2、Veo 3、Seedance 1.5 pro/2.0 产品能力强，但细节不完整。Seedance 明确披露 dual-branch DiT、cross-modal joint、SFT/RLHF。</p>
+        </div>
+        <div class="card">
+          <h3>开源/开放报告</h3>
+          <p>LTX-2、UniVerse-1、JavisDiT++、ProAV-DiT 给出了可复用模块：dual stream、SoE、TA-RoPE、modality CFG、AV-DPO。</p>
+        </div>
+        <div class="card">
+          <h3>V2A/Foley 强模块</h3>
+          <p>Movie Gen Audio、Google V2A、HunyuanVideo-Foley、MMAudio 适合做 data engine、teacher、baseline 和 warmup stage。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="capabilities">
+      <h2>Target Capabilities</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>任务</th><th>输入</th><th>输出</th><th>训练数据</th></tr></thead>
+          <tbody>
+            <tr><td>T2AV</td><td>text</td><td>video + audio</td><td>text-video-audio triplets</td></tr>
+            <tr><td>I2AV</td><td>image + text</td><td>video + audio</td><td>first-frame video-audio</td></tr>
+            <tr><td>V2A / TV2A</td><td>video + optional text</td><td>audio</td><td>video-audio + audio captions</td></tr>
+            <tr><td>T2V</td><td>text</td><td>video only</td><td>image/video-text</td></tr>
+            <tr><td>T2A</td><td>text</td><td>audio only</td><td>text-audio</td></tr>
+            <tr><td>A2V</td><td>audio + optional text/image</td><td>video</td><td>speech/music/action aligned A/V</td></tr>
+            <tr><td>AV continuation</td><td>partial video/audio + text</td><td>continuation</td><td>long clips / masked frames/audio</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>Data Recipe</h2>
+      <p>joint A/V 数据不是简单视频加音轨。必须构建 video-audio-caption triplets：video caption、audio caption、ASR transcript、audio event timeline、A/V sync score、diegetic/non-diegetic 标签、speech/lip 标签。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>数据池</th><th>用途</th><th>核心过滤</th></tr></thead>
+          <tbody>
+            <tr><td>General A/V</td><td>学常见音画关联</td><td>video/audio quality、sync、dedup</td></tr>
+            <tr><td>Speech/Lip</td><td>学 dialogue/lip-sync</td><td>face track、speaker diarization、ASR、SyncNet</td></tr>
+            <tr><td>Foley/Event</td><td>学动作音效</td><td>audio event detection、onset alignment</td></tr>
+            <tr><td>Music/Performance</td><td>学音乐和舞台</td><td>beat/action alignment、music quality</td></tr>
+            <tr><td>Ambient/Scene</td><td>学环境声</td><td>long ambience、low speech contamination</td></tr>
+            <tr><td>Video-only</td><td>保视频能力</td><td>video caption/quality</td></tr>
+            <tr><td>Audio-only</td><td>保音频质量</td><td>audio caption、loudness、noise</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Recommended Mixture</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>数据类型</th><th>Pretrain</th><th>SFT</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>General A/V</td><td>35%</td><td>20%</td><td>基础音画共现</td></tr>
+            <tr><td>Speech/Lip</td><td>20%</td><td>30%</td><td>对话、口型、多语言</td></tr>
+            <tr><td>Foley/Event</td><td>15%</td><td>20%</td><td>动作音效和 timing</td></tr>
+            <tr><td>Ambient/Scene</td><td>10%</td><td>10%</td><td>场景环境声</td></tr>
+            <tr><td>Music/Performance</td><td>5%</td><td>5%</td><td>控制音乐污染</td></tr>
+            <tr><td>Video-only</td><td>10%</td><td>10%</td><td>防 video quality 退化</td></tr>
+            <tr><td>Audio-only</td><td>5%</td><td>5%</td><td>防 audio quality 退化</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="warn callout">Music-heavy 数据要谨慎。大量非 diegetic music 会让模型在任何视频中自动加背景音乐，降低可控性。</div>
+    </section>
+
+    <section id="model">
+      <h2>Model Recipe</h2>
+      <p>推荐从 Wan 类 T2V 模型扩成 asymmetric dual-stream video-audio DiT。</p>
+      <div class="flow">
+        <div class="box">
+          <h3>Video Stream</h3>
+          <p>大容量，Wan 初始化；保持 official checkpoint path 和 VAE latent shape 兼容。</p>
+        </div>
+        <div class="arrow">↔</div>
+        <div class="box">
+          <h3>Audio Stream</h3>
+          <p>较小容量，新初始化或 audio model 初始化；通过 audio AE latent 训练。</p>
+        </div>
+      </div>
+      <ul>
+        <li><strong>Cross-modal fusion:</strong> bidirectional cross-attention、temporal-aligned RoPE、cross-modality AdaLN、zero-init gated residual。</li>
+        <li><strong>Audio representation:</strong> continuous audio latent autoencoder 优先；DAC/EnCodec 可作为替代 tokenizer 或 teacher。</li>
+        <li><strong>CFG:</strong> modality-aware CFG，分别控制 text、video、audio、cross-modal guidance。</li>
+        <li><strong>Condition dropout:</strong> drop text/audio/video/image/transcript/cross-modal links，以支持 T2AV/T2V/T2A/V2A/I2AV/A2V。</li>
+      </ul>
+    </section>
+
+    <section id="training">
+      <h2>Training Recipe</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>阶段</th><th>目标</th><th>关键策略</th><th>验收</th></tr></thead>
+          <tbody>
+            <tr><td>Stage 0 Tokenizer</td><td>验证 video/audio encode-decode</td><td>冻结 Wan VAE；训练/选择 audio AE</td><td>无明显 temporal flicker / audio delay</td></tr>
+            <tr><td>Stage 1 Audio Warmup</td><td>先训稳 audio branch</td><td>T2A + V2A；冻结 video stream</td><td>V2A event timing 可用</td></tr>
+            <tr><td>Stage 2 Low-Res Joint</td><td>建立 video/audio/text 共同分布</td><td>360p/480p、4s/8s；训练 cross-modal modules</td><td>T2AV smoke，T2V 不退化</td></tr>
+            <tr><td>Stage 3 Multi-Bucket</td><td>扩到 720p/16s/横竖屏</td><td>latent-shape bucket，progressive duration/resolution</td><td>多 bucket loss 稳定</td></tr>
+            <tr><td>Stage 4 Capability SFT</td><td>对话、foley、ambient、画质</td><td>专项 HQ sets，transcript/event timeline condition</td><td>产品 prompt suite 可用</td></tr>
+            <tr><td>Stage 5 AV-DPO/RLHF</td><td>对齐人类偏好</td><td>多轴 reward：画质、音质、同步、prompt、安全</td><td>优于 external Foley baseline</td></tr>
+            <tr><td>Stage 6 Distillation</td><td>降低推理成本</td><td>step distill、CFG distill、cache</td><td>交互式生成速度可接受</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <pre><code>L = w_v * L_video_flow
+  + w_a * L_audio_flow
+  + w_sync * L_av_sync
+  + w_lip * L_lip_sync
+  + w_align * L_text_av_alignment
+  + w_reg * L_cross_modal_regularization</code></pre>
+    </section>
+
+    <section id="distributed">
+      <h2>Distributed Training</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>维度</th><th>策略</th></tr></thead>
+          <tbody>
+            <tr><td>Data parallel</td><td>FSDP / distributed optimizer / ZeRO-style sharding</td></tr>
+            <tr><td>Tensor parallel</td><td>video stream attention/MLP TP；audio stream 可较小 TP</td></tr>
+            <tr><td>Sequence/context parallel</td><td>video token 的 temporal/spatial CP/SP；cross-modal attention 也要分片</td></tr>
+            <tr><td>Activation recompute</td><td>video blocks、cross-modal blocks、long-duration buckets 开 recompute</td></tr>
+            <tr><td>Mixed precision</td><td>bf16 起步；成熟后评估 FP8/TE，注意 audio loss 稳定</td></tr>
+            <tr><td>Checkpoint</td><td>distributed checkpoint，支持 TP/CP/DP reshard；video/audio/cross-modal 分 module 保存</td></tr>
+            <tr><td>Data loading</td><td>manifest shards、latent cache、text/audio embedding cache、bucket sampler</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="eval">
+      <h2>Evaluation And Acceptance</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Metrics</h3>
+          <p>Video: FVD、VBench、temporal flicker。Audio: FAD、CLAPScore、PESQ/STOI、clipping/noise。Sync: SyncNet/LSE-C/LSE-D、event onset error、lip-sync score。</p>
+        </div>
+        <div class="card">
+          <h3>Acceptance Ladder</h3>
+          <p>Tokenizer reconstruction → V2A smoke → T2A smoke → T2V parity → T2AV smoke → 1-sample overfit → small SFT → bucket stress → preference win → distributed resume。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="milestones">
+      <h2>Recommended Wan-Based Milestones</h2>
+      <ol>
+        <li><strong>Milestone A:</strong> Wan + external Foley baseline，建立 A/V evaluation suite。</li>
+        <li><strong>Milestone B:</strong> 冻结 Wan，新增 audio stream，训练 V2A/T2A。</li>
+        <li><strong>Milestone C:</strong> 解冻后几层，训练 low-res native T2AV。</li>
+        <li><strong>Milestone D:</strong> HQ dialogue/foley/ambient SFT + AV-DPO。</li>
+        <li><strong>Milestone E:</strong> long/multi-reference AV，支持 voice/audio/image/video reference。</li>
+      </ol>
+    </section>
+
+    <section id="sources">
+      <h2>Sources</h2>
+      <div class="table-wrap">
+        <table class="source-list">
+          <tbody>
+            <tr><td><a href="https://openai.com/research/sora-2/">Sora 2</a></td><td>OpenAI video-audio generation model，公开 synchronized dialogue、sound effects、soundscapes。</td></tr>
+            <tr><td><a href="https://storage.googleapis.com/deepmind-media/veo/Veo-3-Tech-Report.pdf">Veo 3</a></td><td>Google DeepMind native audio-video product report。</td></tr>
+            <tr><td><a href="https://deepmind.google/blog/generating-audio-for-video/">DeepMind V2A</a></td><td>Video pixels + text prompt 生成同步音频。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2512.13507">Seedance 1.5 pro</a></td><td>dual-branch DiT、cross-modal joint、SFT/RLHF。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2601.03233">LTX-2</a></td><td>14B video stream + 5B audio stream、bidirectional cross-attention、modality CFG。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2410.13720">Movie Gen</a></td><td>video/audio foundation model suite and data recipe。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2509.06155">UniVerse-1</a></td><td>stitching-of-experts for unified A/V generation。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2602.19163">JavisDiT++</a></td><td>Wan-based JAVG，MS-MoE、TA-RoPE、AV-DPO。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2508.16930">HunyuanVideo-Foley</a></td><td>100k-hour TV2A data pipeline and multimodal diffusion transformer。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2412.15322">MMAudio</a></td><td>CVPR 2025 public V2A baseline with multimodal joint training。</td></tr>
+            <tr><td><a href="https://huggingface.co/docs/diffusers/api/pipelines/stable_audio">Stable Audio Open</a></td><td>latent audio diffusion architecture。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

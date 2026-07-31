@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>音视频联合生成基座方案调研</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --paper: #ffffff;
+      --ink: #1f2937;
+      --muted: #5e6b7c;
+      --line: #d9e0ea;
+      --soft: #eef4f7;
+      --accent: #146b78;
+      --accent2: #8b5a14;
+      --shadow: 0 18px 50px rgba(31, 41, 55, .10);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.66;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .shell { max-width: 1180px; margin: 0 auto; padding: 34px 24px 60px; }
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      border-bottom: 1px solid var(--line);
+      background: rgba(246, 247, 249, .93);
+      backdrop-filter: blur(10px);
+    }
+    nav .links { max-width: 1180px; margin: 0 auto; padding: 11px 24px; display: flex; gap: 10px; flex-wrap: wrap; }
+    nav a { background: var(--paper); border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px; font-size: 13px; }
+    header {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      box-shadow: var(--shadow);
+      padding: 34px;
+      margin-bottom: 22px;
+    }
+    .eyebrow { margin: 0 0 10px; color: var(--accent); font-size: 13px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(30px, 4vw, 48px); line-height: 1.12; letter-spacing: 0; }
+    .subtitle { max-width: 940px; color: var(--muted); margin: 18px 0 0; font-size: 17px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+    .tag { border: 1px solid var(--line); background: var(--soft); border-radius: 999px; padding: 5px 11px; font-size: 13px; color: var(--muted); }
+    section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 26px;
+      margin: 18px 0;
+    }
+    h2 { margin: 0 0 14px; font-size: 25px; line-height: 1.24; }
+    h3 { margin: 22px 0 10px; font-size: 19px; }
+    p { margin: 10px 0; }
+    ul { padding-left: 22px; }
+    li { margin: 7px 0; }
+    .callout { border-left: 4px solid var(--accent); background: #eef8f8; padding: 14px 16px; border-radius: 10px; margin: 16px 0; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .card { border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: #fbfcfe; }
+    .card h3 { margin-top: 0; }
+    .table-wrap { overflow-x: auto; margin: 14px 0; }
+    table { width: 100%; border-collapse: collapse; min-width: 760px; }
+    th, td { border: 1px solid var(--line); padding: 10px 12px; vertical-align: top; }
+    th { background: var(--soft); text-align: left; }
+    .source-list td:first-child { white-space: nowrap; font-weight: 700; }
+    @media (max-width: 780px) {
+      .grid { grid-template-columns: 1fr; }
+      header, section { padding: 22px; }
+      .shell { padding-left: 16px; padding-right: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="links">
+      <a href="#summary">结论</a>
+      <a href="#taxonomy">分类</a>
+      <a href="#closed">闭源</a>
+      <a href="#open">开放</a>
+      <a href="#foley">V2A/Foley</a>
+      <a href="#wan">Wan 启发</a>
+      <a href="#sources">来源</a>
+    </div>
+  </nav>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">Research · 2026-05-19</p>
+      <h1>音视频联合生成基座方案调研</h1>
+      <p class="subtitle">调研成熟或接近成熟的 audio-video joint generation 方案，覆盖闭源商业模型、开源/开放权重模型、带 technical report 的研究方案，以及 video-to-audio / Foley 强基线。</p>
+      <div class="meta">
+        <span class="tag">native A/V</span>
+        <span class="tag">dual-stream DiT</span>
+        <span class="tag">Foley</span>
+        <span class="tag">Wan evolution</span>
+      </div>
+    </header>
+
+    <section id="summary">
+      <h2>Executive Summary</h2>
+      <div class="callout">
+        当前最成熟的方向正在从“先生成视频再配音”迁移到“原生 audio-video joint generation”。闭源头部是 Sora 2 / Veo 3 / Seedance / Kling-Omni；开源可落地代表是 LTX-2；研究路线集中在 UniVerse-1、JavisDiT++、ALIVE、ProAV-DiT，以及 HunyuanVideo-Foley / MMAudio 这类 V2A 强基线。
+      </div>
+      <ul>
+        <li><strong>闭源商业最成熟:</strong> Sora 2、Veo 3/3.1、Seedance 2.0、Kling-Omni。</li>
+        <li><strong>开源可研究最直接:</strong> LTX-2 / LTX-2.3，公开 dual-stream audio-video foundation model。</li>
+        <li><strong>对 Wan 最直接:</strong> JavisDiT++，公开写明 built upon Wan2.1-1.3B-T2V。</li>
+        <li><strong>Foley 线不可忽视:</strong> HunyuanVideo-Foley、MMAudio 可作为 teacher、baseline、数据 engine。</li>
+      </ul>
+    </section>
+
+    <section id="taxonomy">
+      <h2>Taxonomy</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Native Joint A/V</h3>
+          <p>一个模型或紧耦合模型族在同一生成过程中输出 video + speech / sound effects / ambience / music。代表：Sora 2、Veo 3、Seedance 1.5 pro、LTX-2。</p>
+        </div>
+        <div class="card">
+          <h3>Video Backbone Adaptation</h3>
+          <p>复用强视频基座，加 audio latent branch、cross-modal attention、temporal-aligned RoPE、audio codec/VAE。代表：JavisDiT++、ALIVE、UniVerse-1。</p>
+        </div>
+        <div class="card">
+          <h3>Video-To-Audio / Foley</h3>
+          <p>已有视频和文本输入，生成同步音效/环境音/音乐/语音。代表：Movie Gen Audio、Google V2A、HunyuanVideo-Foley、MMAudio。</p>
+        </div>
+        <div class="card">
+          <h3>Unified Multi-Task</h3>
+          <p>统一支持 T2AV、T2V、T2A、V2A、I2AV、A2V、editing、continuation，通常需要 condition dropout 和多任务 curriculum。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="closed">
+      <h2>Closed / Commercial Systems</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>系统</th><th>公开信息</th><th>复现价值</th></tr></thead>
+          <tbody>
+            <tr><td>Sora 2</td><td>OpenAI video and audio generation model，支持 synchronized dialogue、sound effects、background soundscapes。</td><td>产品能力参考强，架构细节有限。</td></tr>
+            <tr><td>Veo 3 / 3.1</td><td>Google DeepMind 原生音视频生成，产品侧强调 dialogue、sound effects、ambient audio。</td><td>适合作为能力目标，训练细节披露少。</td></tr>
+            <tr><td>Seedance 1.5 pro</td><td>Native A/V joint foundation model；dual-branch DiT、cross-modal joint module、multi-stage data pipeline、SFT/RLHF。</td><td>公开报告最有结构参考价值。</td></tr>
+            <tr><td>Kling-Omni / Kling-O1</td><td>多模态生成/编辑/推理框架，外部产品强调 native audio output。</td><td>多模态工作流参考强，audio branch 细节较少。</td></tr>
+            <tr><td>Movie Gen Audio</td><td>Meta media foundation model suite，video-to-audio/text-to-audio 与视频模型组合。</td><td>production pipeline 和数据配方参考强。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="open">
+      <h2>Open / Research Systems</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>系统</th><th>关键设计</th><th>适合借鉴</th></tr></thead>
+          <tbody>
+            <tr><td>LTX-2</td><td>14B video stream + 5B audio stream，bidirectional cross-attention，cross-modality AdaLN，modality CFG。</td><td>开源 joint A/V 最重要参考。</td></tr>
+            <tr><td>UniVerse-1</td><td>Stitching-of-experts，把预训练 video/music experts 融合，约 7,600 小时 A/V finetune。</td><td>低成本启动 joint model。</td></tr>
+            <tr><td>JavisDiT++</td><td>基于 Wan2.1-1.3B，MS-MoE、TA-RoPE、AV-DPO，约 1M public entries。</td><td>Wan 扩 A/V 的直接路径。</td></tr>
+            <tr><td>ProAV-DiT</td><td>把 raw audio 预处理成 video-like representations，统一 latent space，多尺度 dual-stream autoencoder。</td><td>音频和视频结构对齐。</td></tr>
+            <tr><td>AV-DiT</td><td>shared DiT backbone + lightweight adapters。</td><td>小模型和低成本 joint training baseline。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="foley">
+      <h2>Video-To-Audio / Foley Systems</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Google V2A</h3>
+          <p>视频像素 + 文本 prompt 生成同步音频。公开说明采用 diffusion audio generation，并用 AI-generated sound descriptions 和 speech transcripts 增强训练。</p>
+        </div>
+        <div class="card">
+          <h3>HunyuanVideo-Foley</h3>
+          <p>TV2A framework，100k-hour multimodal data pipeline，representation alignment，dual-stream audio-video fusion + text cross-attention。</p>
+        </div>
+        <div class="card">
+          <h3>MMAudio</h3>
+          <p>CVPR 2025 public V2A baseline，video/text/audio joint training，conditional synchronization module，157M 参数，8s clip 低延迟。</p>
+        </div>
+        <div class="card">
+          <h3>Movie Gen Audio</h3>
+          <p>Meta 研究系统，面向 video-to-audio 和 text-to-audio；适合作为 production 分阶段系统参考。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="wan">
+      <h2>Implications For Wan-Based Work</h2>
+      <ul>
+        <li>先建立 Wan + external Foley 的强 baseline，再做原生 joint model。</li>
+        <li>优先尝试 asymmetric dual-stream：Wan video stream 保持主干，新增较小 audio stream。</li>
+        <li>cross-modal gates 零初始化，训练初期冻结大部分 video stream，避免画质退化。</li>
+        <li>训练数据必须从 video-text 扩成 video-audio-caption triplets，包含 transcript、audio event timeline、sync score。</li>
+        <li>验收必须包含 T2V parity、V2A smoke、T2AV smoke、A/V 1-sample overfit、TP/CP/recompute 下 ckpt resume。</li>
+      </ul>
+    </section>
+
+    <section id="sources">
+      <h2>Sources</h2>
+      <div class="table-wrap">
+        <table class="source-list">
+          <tbody>
+            <tr><td><a href="https://openai.com/research/sora-2/">Sora 2</a></td><td>OpenAI video-audio generation model。</td></tr>
+            <tr><td><a href="https://storage.googleapis.com/deepmind-media/veo/Veo-3-Tech-Report.pdf">Veo 3</a></td><td>Google DeepMind video model with native audio。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2512.13507">Seedance 1.5 pro</a></td><td>Native A/V joint foundation model。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2601.03233">LTX-2</a></td><td>Open-source dual-stream audio-video foundation model。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2602.19163">JavisDiT++</a></td><td>Wan-based joint audio-video generation。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2509.06155">UniVerse-1</a></td><td>Unified A/V generation via stitching experts。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2508.16930">HunyuanVideo-Foley</a></td><td>High-fidelity TV2A with 100k-hour data pipeline。</td></tr>
+            <tr><td><a href="https://arxiv.org/abs/2412.15322">MMAudio</a></td><td>Public V2A model with multimodal joint training。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

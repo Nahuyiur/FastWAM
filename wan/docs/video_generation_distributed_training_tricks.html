@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video Generation 分布式训练 Trick 调研</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --paper: #ffffff;
+      --ink: #1f2937;
+      --muted: #5f6b7a;
+      --line: #d9dee7;
+      --soft: #eef3f8;
+      --accent: #176b87;
+      --accent-2: #8a4f16;
+      --good: #177245;
+      --warn: #a26300;
+      --bad: #a83232;
+      --shadow: 0 18px 50px rgba(31, 41, 55, 0.10);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.65;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .shell {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 24px 56px;
+    }
+    header.hero {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      border-radius: 14px;
+      padding: 34px;
+      margin-bottom: 22px;
+    }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 4vw, 48px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+    .subtitle {
+      max-width: 920px;
+      color: var(--muted);
+      margin: 18px 0 0;
+      font-size: 17px;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 22px;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      color: #354150;
+      font-size: 13px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    nav.toc {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 18px;
+      margin-bottom: 22px;
+    }
+    nav.toc strong { display: block; margin-bottom: 8px; }
+    nav.toc a {
+      display: inline-block;
+      margin: 4px 16px 4px 0;
+      font-size: 14px;
+      font-weight: 650;
+    }
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 22px;
+    }
+    section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 26px;
+    }
+    h2 {
+      margin: 0 0 16px;
+      font-size: 25px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 26px 0 8px;
+      font-size: 19px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+    p { margin: 0 0 14px; }
+    ul { margin: 0 0 16px 22px; padding: 0; }
+    li { margin: 6px 0; }
+    code {
+      padding: 2px 6px;
+      border-radius: 5px;
+      background: #eef1f5;
+      color: #243142;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .92em;
+    }
+    pre {
+      overflow-x: auto;
+      background: #101827;
+      color: #e8eef8;
+      border-radius: 10px;
+      padding: 16px;
+      margin: 16px 0;
+      line-height: 1.5;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: #eef8fb;
+      padding: 15px 16px;
+      margin: 16px 0;
+      border-radius: 8px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin: 18px 0 4px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 16px;
+      background: #fbfcfe;
+    }
+    .card h3 { margin-top: 0; }
+    .card p { color: var(--muted); font-size: 14px; }
+    .pill-good { color: var(--good); font-weight: 750; }
+    .pill-warn { color: var(--warn); font-weight: 750; }
+    .pill-bad { color: var(--bad); font-weight: 750; }
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      margin: 16px 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+      background: var(--paper);
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      background: #eef3f8;
+      color: #2a3645;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    tr:last-child td { border-bottom: 0; }
+    .source-list {
+      columns: 2;
+      column-gap: 38px;
+    }
+    .source-list li { break-inside: avoid; }
+    footer {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 20px;
+      text-align: center;
+    }
+    @media (max-width: 860px) {
+      .shell { padding: 18px 14px 38px; }
+      header.hero { padding: 24px; }
+      section { padding: 20px; }
+      .grid { grid-template-columns: 1fr; }
+      .source-list { columns: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <p class="eyebrow">Research Note · 2026-05-19</p>
+      <h1>Video Generation 分布式训练 Trick 调研</h1>
+      <p class="subtitle">
+        面向 DiT / MMDiT / flow-matching 视频生成基座训练，整理公开 tech report、repo 和论文中可见的分布式训练与系统优化策略，并给出对 Wan Megatron port 的验收含义。
+      </p>
+      <div class="meta">
+        <span class="tag">FSDP / ZeRO</span>
+        <span class="tag">Tensor Parallel</span>
+        <span class="tag">Sequence / Context Parallel</span>
+        <span class="tag">Activation Recompute</span>
+        <span class="tag">Sharded Checkpoint</span>
+        <span class="tag">Video Bucket Curriculum</span>
+      </div>
+    </header>
+
+    <nav class="toc">
+      <strong>快速跳转</strong>
+      <a href="#summary">结论</a>
+      <a href="#taxonomy">Trick Taxonomy</a>
+      <a href="#matrix">模型证据矩阵</a>
+      <a href="#wan">Wan Megatron 含义</a>
+      <a href="#sources">Sources</a>
+    </nav>
+
+    <main>
+      <section id="summary">
+        <h2>Executive Summary</h2>
+        <div class="callout">
+          头部视频基座训练不是靠单个 trick，而是 <code>FSDP/ZeRO 或 distributed optimizer + TP + SP/CP + activation recompute + sharded checkpoint + mixed precision/fused kernels + 多分辨率训练配方</code> 的组合。
+        </div>
+        <div class="grid">
+          <article class="card">
+            <h3>参数与 Optimizer State</h3>
+            <p>1B+ DiT 加 Adam 很快超过单卡显存。5B/14B/30B 级别必须 sharding 参数、梯度和 optimizer states。</p>
+          </article>
+          <article class="card">
+            <h3>长视频 Token</h3>
+            <p>latent token 近似为 <code>T * H * W</code>。720p、16s、长上下文训练会把 attention activation 推到主瓶颈。</p>
+          </article>
+          <article class="card">
+            <h3>Checkpoint 与容错</h3>
+            <p>训练周期长、ckpt 体积大，需要 sharded save/load、async I/O 和不同并行拓扑之间的 resume/reshard。</p>
+          </article>
+        </div>
+        <pre><code>Data/bucket curriculum
+  + 3D VAE latent compression
+  + BF16/FP8/fused attention
+  + activation recompute
+  + TP for matmuls
+  + SP/CP for long visual sequence
+  + FSDP/ZeRO/distributed optimizer
+  + sharded distributed checkpoint</code></pre>
+        <p>
+          披露粒度上，Sora/Veo 主要讲 latent patches、variable size、caption/data/safety，不披露具体训练并行实现；
+          Movie Gen、Goku、Open-Sora、Wan、Hunyuan、Seedance 则不同程度提到 parallelization、FSDP、sequence parallel、checkpoint、kernel/system optimization。
+        </p>
+      </section>
+
+      <section id="taxonomy">
+        <h2>Trick Taxonomy</h2>
+
+        <h3>1. FSDP / ZeRO / Distributed Optimizer</h3>
+        <p><strong>用途:</strong> shard parameters、gradients、optimizer states，解决 Adam state 和 full replica 显存问题。</p>
+        <ul>
+          <li>Wan2.1 repo 直接使用 PyTorch FSDP <code>FULL_SHARD</code>，并配置 BF16 params / FP32 reduce / FP32 buffer。</li>
+          <li>Goku 公开材料提到 FSDP <code>HYBRID_SHARD</code>，在 shard group 内 FULL_SHARD，group 间 replication。</li>
+          <li>Open-Sora 2.0 资料提到 ColossalAI、ZeroDP 与 Context Parallelism。</li>
+        </ul>
+        <p><strong>工程判断:</strong> 这是 5B+ 视频 DiT 的基础能力。没有 sharded optimizer，就只能做小模型或短 smoke。</p>
+
+        <h3>2. Tensor Parallelism, TP</h3>
+        <p><strong>用途:</strong> shard transformer matmul，降低每 rank 权重和 optimizer state，并提升大矩阵吞吐。</p>
+        <ul>
+          <li>常见切法是 Q/K/V Column Parallel、attention output Row Parallel、FFN Column→Row。</li>
+          <li>Movie Gen 最大 video model 是 30B transformer，最大上下文 73K video tokens，并明确提到 parallelization techniques。</li>
+        </ul>
+        <p><strong>工程判断:</strong> TP 不能盲目套 LLM pattern。视频 DiT 的 QK norm、3D RoPE、cross-attention、patchify/unpatchify 都会影响切法。</p>
+
+        <h3>3. Sequence / Context Parallelism, SP/CP</h3>
+        <p><strong>用途:</strong> 沿 sequence/token 维切分长视频 latent tokens，降低 attention activation 和 per-rank sequence memory。</p>
+        <ul>
+          <li>Wan2.1 的 xDiT/USP 代码按 sequence parallel rank 切 RoPE freqs，并使用 <code>xFuserLongContextAttention</code>。</li>
+          <li>Open-Sora 1.2 报告说明基于 Ulysses/all-to-all 的 sequence parallel。</li>
+          <li>ColossalAI 支持 TP+SP、DeepSpeed-Ulysses 和 Ring Attention。</li>
+        </ul>
+        <p><strong>工程判断:</strong> SP/CP 是高分辨率/长视频训练的关键进阶项，但必须同时处理 3D RoPE、padding、attention mask、variable grid、loss reduction 和 RNG 一致性。</p>
+
+        <h3>4. Pipeline Parallelism, PP</h3>
+        <p><strong>用途:</strong> 沿层切分模型，常与 TP/FSDP/CP 组成 3D/4D parallelism。</p>
+        <p><strong>工程判断:</strong> 1.3B/5B 阶段通常可以先用 TP + distributed optimizer/FSDP；14B/30B 或更长上下文才更可能需要 PP。PP 支持必须验证 DCP、resume、loss、inference。</p>
+
+        <h3>5. Activation Checkpointing / Recompute</h3>
+        <p><strong>用途:</strong> backward 时重算 activation，换取显存下降。视频 DiT activation 很大，recompute 几乎是标配。</p>
+        <p><strong>工程判断:</strong> 自定义 DiT port 不能只传 <code>--recompute-granularity full</code>。如果模型不是 Megatron 内置 Transformer block，必须在自定义 block forward 里显式接入 checkpoint/recompute。</p>
+
+        <h3>6. Sharded / Async / Reshardable Checkpointing</h3>
+        <p><strong>用途:</strong> 支持大模型训练容错、并行保存、不同并行拓扑加载。</p>
+        <ul>
+          <li>Goku 公开材料提到 ByteCheckpoint 支持 partitioned checkpoint 的 save/load 和 distributed checkpoint resharding。</li>
+          <li>Open-Sora 2.0 资料提到 pinned memory、async disk writing、shard reading 与 weight transfer pipeline。</li>
+        </ul>
+        <p><strong>工程判断:</strong> Megatron port 应坚持 <code>torch_dist</code> / DCP，而不是单文件 <code>.pt</code>。</p>
+
+        <h3>7. Mixed Precision / FP8 / Kernel Fusion</h3>
+        <p>BF16 是安全 baseline。FP8、fused attention、kernel fusion、heterogeneous quantization 和 sparsity 是更高阶吞吐优化，但需要独立数值验证。</p>
+
+        <h3>8. Multi-Resolution / Frame Packing / Bucketed Batching</h3>
+        <p>这不是通信 primitive，但决定训练系统是否真实可用。真实基座训练需要按 latent token count / frames / resolution / aspect 分桶，避免 batch token 量大幅波动。</p>
+
+        <h3>9. Progressive Curriculum / Joint Image-Video Training</h3>
+        <p>头部模型普遍通过图像/视频 joint training、低分辨率到高分辨率、短视频到长视频的 curriculum 降低训练成本并稳定收敛。</p>
+      </section>
+
+      <section id="matrix">
+        <h2>Model Evidence Matrix</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>模型 / 项目</th>
+                <th>披露程度</th>
+                <th>提到/可见的分布式或系统 trick</th>
+                <th>备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Sora</td>
+                <td><span class="pill-warn">低</span></td>
+                <td>latent patches、variable duration/resolution/aspect、scaling</td>
+                <td>报告明确说不包含 model 和 implementation details。</td>
+              </tr>
+              <tr>
+                <td>Veo 3</td>
+                <td><span class="pill-warn">低</span></td>
+                <td>数据、caption、安全、post-training</td>
+                <td>技术报告不披露训练并行栈。</td>
+              </tr>
+              <tr>
+                <td>Movie Gen</td>
+                <td><span class="pill-good">中</span></td>
+                <td>30B transformer、73K video tokens、parallelization techniques、3D/model parallelism</td>
+                <td>头部闭源里相对更明确提到 parallelization。</td>
+              </tr>
+              <tr>
+                <td>HunyuanVideo</td>
+                <td><span class="pill-good">中</span></td>
+                <td>13B+ model、efficient infrastructure、xDiT parallel inference、FP8 inference</td>
+                <td>训练并行细节没有完全展开。</td>
+              </tr>
+              <tr>
+                <td>Wan2.1</td>
+                <td><span class="pill-good">高</span></td>
+                <td>FSDP FULL_SHARD、USP/xDiT sequence/context parallel、CPU/model offload</td>
+                <td>repo 代码最 concrete。</td>
+              </tr>
+              <tr>
+                <td>Open-Sora / Open-Sora 2.0</td>
+                <td><span class="pill-good">高</span></td>
+                <td>ColossalAI、ZeroDP、Context Parallelism、Sequence Parallelism、checkpoint optimization</td>
+                <td>开源报告对训练系统更透明。</td>
+              </tr>
+              <tr>
+                <td>Goku</td>
+                <td><span class="pill-good">高</span></td>
+                <td>FSDP HYBRID_SHARD、activation checkpointing、ByteCheckpoint、reshardable checkpoint</td>
+                <td>报告偏系统工程，信息很有参考价值。</td>
+              </tr>
+              <tr>
+                <td>Seedance 1.0</td>
+                <td><span class="pill-good">中</span></td>
+                <td>kernel fusion、heterogeneous quantization/sparsity、adaptive hybrid parallelism、async offloading、distributed VAE</td>
+                <td>更偏 inference/system acceleration，但对训练/部署栈有参考。</td>
+              </tr>
+              <tr>
+                <td>CogVideoX</td>
+                <td><span class="pill-warn">中低</span></td>
+                <td>progressive training、multi-resolution frame pack、3D VAE</td>
+                <td>训练配方披露多，并行细节较少。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="wan">
+        <h2>Implications For Wan Megatron Port</h2>
+        <h3>必须支持并实测</h3>
+        <ul>
+          <li><strong>TP:</strong> <code>ColumnParallelLinear</code> / <code>RowParallelLinear</code> 实切参数和 optimizer state；official full checkpoint 需要按 TP rank 做 slicing。</li>
+          <li><strong>DDP / DP:</strong> noise、timestep、context dropout RNG 在 TP rank 内一致；DP rank 正常 all-reduce。</li>
+          <li><strong>Distributed optimizer:</strong> 至少验证 Megatron distributed optimizer 或等价 ZeRO/FSDP optimizer state sharding。</li>
+          <li><strong>DCP:</strong> official ckpt load 后保存 Megatron DCP；DCP resume；DCP inference；optimizer/scheduler state resume。</li>
+          <li><strong>Activation recompute:</strong> 自定义 Wan block 必须真的 checkpoint/recompute，不能只把 Megatron flag 打进日志。</li>
+          <li><strong>真实样本 overfit:</strong> 使用官方 VAE/UMT5 latent，不把 pseudo sample 当主验证。</li>
+        </ul>
+        <h3>暂时不应声称支持，除非单独实现并验证</h3>
+        <ul>
+          <li><strong>SP/CP:</strong> 需要重做 3D RoPE slicing、QK norm、attention all-to-all/all-gather、padding 和 variable grid。</li>
+          <li><strong>PP:</strong> 需要 Wan blocks pipeline stage 化，并验证 DCP/resume/loss/inference。</li>
+          <li><strong>FP8:</strong> 需要 layer policy、amax recipe、FP32 norm/loss 策略、数值一致性和 overfit。</li>
+          <li><strong>FSDP:</strong> 如果改用 Megatron custom FSDP 或 Torch FSDP2，必须与 TP、DCP、official load 一起验。</li>
+        </ul>
+        <h3>推荐验收阶梯</h3>
+        <ol>
+          <li>CPU unit smoke：scheduler / forward shape / checkpoint key conversion。</li>
+          <li>TP=1 official ckpt train smoke：strict load <code>missing=0 unexpected=0</code>。</li>
+          <li>TP=2 official ckpt train smoke：每 rank 参数约为 TP=1 的一半，DCP save。</li>
+          <li>DP=2 train smoke：world size 2 / data parallel size 2，DCP save。</li>
+          <li>TP=2 + distributed optimizer smoke：确认 optimizer state sharded save。</li>
+          <li>TP=1 真实 1-sample overfit：loss 接近 0，DCP inference latent MSE 显著下降，VAE decode 可人工查看。</li>
+          <li>TP=2 + recompute 真实 overfit：确认 recompute 实际生效，DCP inference/decode 可背样本。</li>
+          <li>后续再上 SP/CP/PP/FP8，每个 trick 单独加一致性校验。</li>
+        </ol>
+      </section>
+
+      <section id="sources">
+        <h2>Sources</h2>
+        <ul class="source-list">
+          <li><a href="https://openai.com/index/video-generation-models-as-world-simulators/">Sora: Video generation models as world simulators</a></li>
+          <li><a href="https://storage.googleapis.com/deepmind-media/veo/Veo-3-Tech-Report.pdf">Veo 3 Tech Report PDF</a></li>
+          <li><a href="https://arxiv.org/abs/2410.13720">Movie Gen arXiv 2410.13720</a></li>
+          <li><a href="https://huggingface.co/papers/2410.13720">Movie Gen Hugging Face paper page</a></li>
+          <li><a href="https://arxiv.org/abs/2412.03603">HunyuanVideo arXiv 2412.03603</a></li>
+          <li><a href="https://huggingface.co/tencent/HunyuanVideo">HunyuanVideo Hugging Face model page</a></li>
+          <li><a href="https://deepwiki.com/Wan-Video/Wan2.1/8.1-distributed-processing">Wan2.1 Distributed Processing</a></li>
+          <li><a href="https://raw.githubusercontent.com/Wan-Video/Wan2.1/main/wan/distributed/fsdp.py">Wan2.1 FSDP source</a></li>
+          <li><a href="https://raw.githubusercontent.com/Wan-Video/Wan2.1/main/wan/distributed/xdit_context_parallel.py">Wan2.1 xDiT context parallel source</a></li>
+          <li><a href="https://github.com/hpcaitech/Open-Sora/blob/main/docs/report_03.md">Open-Sora 1.2 report</a></li>
+          <li><a href="https://arxiv.org/abs/2503.09642">Open-Sora 2.0 arXiv 2503.09642</a></li>
+          <li><a href="https://arxiv.org/abs/2412.00131">Open-Sora Plan arXiv 2412.00131</a></li>
+          <li><a href="https://arxiv.org/abs/2502.04896">Goku arXiv 2502.04896</a></li>
+          <li><a href="https://openaccess.thecvf.com/content/CVPR2025/papers/Chen_Goku_Flow_Based_Video_Generative_Foundation_Models_CVPR_2025_paper.pdf">Goku CVPR 2025 PDF</a></li>
+          <li><a href="https://arxiv.org/abs/2408.06072">CogVideoX arXiv 2408.06072</a></li>
+          <li><a href="https://seed.bytedance.com/en/public_papers/seedance-1-0-exploring-the-boundaries-of-video-generation-models">Seedance 1.0 paper page</a></li>
+          <li><a href="https://seed.bytedance.com/en/blog/tech-report-of-seedance-1-0-is-now-publicly-available">Seedance 1.0 blog</a></li>
+          <li><a href="https://colossalai.org/docs/features/sequence_parallelism/">ColossalAI Sequence Parallelism</a></li>
+          <li><a href="https://colossalai.org/docs/features/zero_with_chunk/">ColossalAI ZeRO with chunk</a></li>
+          <li><a href="https://docs.nvidia.com/megatron-core/developer-guide/0.17.0/user-guide/parallelism-guide.html">Megatron-Core Parallelism Strategies Guide</a></li>
+          <li><a href="https://docs.nvidia.com/nemo/automodel/0.4.0/guides/gradient-checkpointing.html">NVIDIA NeMo Activation Checkpointing</a></li>
+        </ul>
+      </section>
+    </main>
+
+    <footer>
+      Generated as a static research note for the Wan Megatron migration discussion. No external CSS or JavaScript required.
+    </footer>
+  </div>
+</body>
+</html>

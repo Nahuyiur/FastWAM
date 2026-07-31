@@ -32,6 +32,7 @@ import tqdm
 
 from robocasa_acg_policy_backends import (
     FastWAMPolicyClient,
+    MegatronFastWAMPolicyClient,
     WebsocketPolicyClient,
     convert_to_uint8,
     preprocess_image,
@@ -241,7 +242,7 @@ def resolve_action_layout(layout: str, policy_backend: str) -> str:
     # base_motion(4), control_mode(1), eef_delta_pos(3), eef_delta_aa(3), gripper(1).
     # The websocket/pi0.5 path keeps the existing eef-first bridge because that
     # policy server was trained/exported with the OpenPI transform contract.
-    return "base_first" if policy_backend == "fastwam" else "eef_first"
+    return "base_first" if policy_backend in {"fastwam", "fastwam_megatron"} else "eef_first"
 
 
 def convert_lerobot_action(action: np.ndarray, action_layout: str) -> dict[str, np.ndarray]:
@@ -766,7 +767,11 @@ def main() -> None:
     parser.add_argument("--bucket", action="append", default=None)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18080)
-    parser.add_argument("--policy-backend", choices=["websocket", "fastwam"], default="websocket")
+    parser.add_argument(
+        "--policy-backend",
+        choices=["websocket", "fastwam", "fastwam_megatron"],
+        default="websocket",
+    )
     parser.add_argument("--action-layout", choices=["auto", "eef_first", "base_first"], default="auto")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--num-trials", type=int, default=5)
@@ -794,6 +799,9 @@ def main() -> None:
     parser.add_argument("--fastwam-action-horizon", type=int, default=32)
     parser.add_argument("--fastwam-num-inference-steps", type=int, default=10)
     parser.add_argument("--fastwam-rand-device", default="cpu")
+    parser.add_argument("--fastwam-vae-checkpoint", default=None)
+    parser.add_argument("--fastwam-action-dim", type=int, default=12)
+    parser.add_argument("--fastwam-proprio-dim", type=int, default=16)
     args = parser.parse_args()
 
     if gym is None or get_task_horizon is None:
@@ -827,7 +835,7 @@ def main() -> None:
 
     if args.policy_backend == "websocket":
         client = WebsocketPolicyClient(args.host, args.port)
-    else:
+    elif args.policy_backend == "fastwam":
         if not args.fastwam_checkpoint:
             raise ValueError("--fastwam-checkpoint is required for --policy-backend fastwam")
         client = FastWAMPolicyClient(
@@ -843,6 +851,26 @@ def main() -> None:
             num_inference_steps=args.fastwam_num_inference_steps,
             seed=args.seed,
             rand_device=args.fastwam_rand_device,
+        )
+    else:
+        if not args.fastwam_checkpoint or not args.fastwam_vae_checkpoint:
+            raise ValueError(
+                "--fastwam-checkpoint and --fastwam-vae-checkpoint are required "
+                "for --policy-backend fastwam_megatron"
+            )
+        client = MegatronFastWAMPolicyClient(
+            repo=args.fastwam_repo,
+            checkpoint=args.fastwam_checkpoint,
+            vae_checkpoint=args.fastwam_vae_checkpoint,
+            norm_stats=args.fastwam_norm_stats,
+            text_cache=args.fastwam_text_cache,
+            device=args.fastwam_device,
+            mixed_precision=args.fastwam_mixed_precision,
+            action_dim=args.fastwam_action_dim,
+            proprio_dim=args.fastwam_proprio_dim,
+            action_horizon=args.fastwam_action_horizon,
+            num_inference_steps=args.fastwam_num_inference_steps,
+            seed=args.seed,
         )
     rows: list[dict[str, Any]] = []
     manifest_rows: list[dict[str, Any]] = []
@@ -927,6 +955,9 @@ def main() -> None:
     write_csv(eval_manifest_path, manifest_rows)
     save_summaries(output_dir, rows, run_config)
     write_video_index(output_dir, rows)
+    close_client = getattr(client, "close", None)
+    if callable(close_client):
+        close_client()
 
 
 if __name__ == "__main__":
