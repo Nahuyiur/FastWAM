@@ -17,7 +17,7 @@ from fast_wam.checkpoint import (
 )
 from fast_wam.components import prepare_camera_image
 from fast_wam.config import FastWAMConfig
-from fast_wam.model import FastWAMModel
+from fast_wam.model import FastWAMModel, _fast_wam_training_mask_mod
 from fast_wam.policy import MinMaxStats
 from fast_wam.scheduler import WanFlowMatchScheduler
 from fast_wam.train.initialization import resize_action_backbone_tensor
@@ -389,25 +389,70 @@ def test_tiny_training_matches_reference_and_backward():
     assert ours.action_expert.action_encoder.weight.grad is not None
 
 
-def test_flex_training_matches_sdpa():
-    cfg = FastWAMConfig.tiny()
+@pytest.mark.parametrize(
+    ("video_length", "action_length", "first_frame_length"),
+    ((12, 8, 4), (20, 8, 4), (20, 8, 8)),
+)
+def test_fast_wam_flex_mask_predicate_matches_dense_contract(
+    video_length,
+    action_length,
+    first_frame_length,
+):
+    model = FastWAMModel(FastWAMConfig.tiny())
+    expected = model.build_training_attention_mask(
+        video_length,
+        action_length,
+        first_frame_length,
+        device=torch.device("cpu"),
+    )
+    total = video_length + action_length
+    query_index = torch.arange(total).view(total, 1)
+    key_index = torch.arange(total).view(1, total)
+    actual = _fast_wam_training_mask_mod(
+        video_length,
+        first_frame_length,
+    )(None, None, query_index, key_index)
+    torch.testing.assert_close(actual, expected)
+
+
+def test_flex_training_matches_structured_sdpa_for_all_gradients():
+    cfg = replace(
+        FastWAMConfig.tiny(),
+        training_attention_backend="structured_sdpa",
+        training_kernel_mode="optimized",
+    )
     values = _fixed_training_inputs(cfg)
     torch.manual_seed(31)
     reference = FastWAMModel(cfg)
-    expected, _ = reference.training_loss_encoded(**values)
+    expected, expected_metrics = reference.training_loss_encoded(**values)
     expected.backward()
 
-    torch.manual_seed(31)
     flex = FastWAMModel(replace(cfg, training_attention_backend="flex"))
-    actual, _ = flex.training_loss_encoded(**values)
+    flex.load_state_dict(reference.state_dict(), strict=True)
+    actual, actual_metrics = flex.training_loss_encoded(**values)
     actual.backward()
     torch.testing.assert_close(actual, expected, atol=1.0e-5, rtol=1.0e-5)
-    torch.testing.assert_close(
-        flex.video_expert.patch_embedding.weight.grad,
-        reference.video_expert.patch_embedding.weight.grad,
-        atol=1.0e-5,
-        rtol=1.0e-5,
-    )
+    for key in ("loss_video", "loss_action"):
+        torch.testing.assert_close(
+            actual_metrics[key],
+            expected_metrics[key],
+            atol=1.0e-5,
+            rtol=1.0e-5,
+        )
+    reference_parameters = dict(reference.named_parameters())
+    flex_parameters = dict(flex.named_parameters())
+    assert flex_parameters.keys() == reference_parameters.keys()
+    for name, reference_parameter in reference_parameters.items():
+        flex_parameter = flex_parameters[name]
+        assert (flex_parameter.grad is None) == (reference_parameter.grad is None), name
+        if reference_parameter.grad is not None:
+            torch.testing.assert_close(
+                flex_parameter.grad,
+                reference_parameter.grad,
+                atol=5.0e-5,
+                rtol=5.0e-5,
+                msg=lambda message, name=name: f"{name}: {message}",
+            )
 
 
 def test_optimized_structured_training_matches_reference_and_backward():

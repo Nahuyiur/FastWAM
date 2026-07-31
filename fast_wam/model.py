@@ -36,7 +36,7 @@ from .scheduler import WanFlowMatchScheduler
 
 
 _FLEX_ATTENTION_COMPILED = None
-_FLEX_BLOCK_MASKS: dict[tuple[str, int, int, int], Any] = {}
+_FLEX_BLOCK_MASKS: dict[tuple[Any, ...], Any] = {}
 
 
 def _debug_tensor_digest(tensor: torch.Tensor) -> str:
@@ -619,6 +619,70 @@ class ActionExpert(nn.Module):
         return self.head(tokens)
 
 
+def _fast_wam_training_mask_mod(
+    video_sequence_length: int,
+    video_tokens_per_frame: int,
+):
+    """Return the exact no-future-leakage predicate used by Fast-WAM."""
+
+    def mask_mod(batch, head, query_index, key_index):
+        del batch, head
+        clean_query = query_index < video_tokens_per_frame
+        video_query = query_index < video_sequence_length
+        clean_key = key_index < video_tokens_per_frame
+        video_key = key_index < video_sequence_length
+        return torch.where(
+            clean_query,
+            clean_key,
+            torch.where(
+                video_query,
+                video_key,
+                clean_key | ~video_key,
+            ),
+        )
+
+    return mask_mod
+
+
+def _fast_wam_flex_block_mask(
+    video_sequence_length: int,
+    action_sequence_length: int,
+    video_tokens_per_frame: int,
+    *,
+    device: torch.device,
+):
+    """Build and cache FlexAttention's block form of the official dense mask."""
+
+    try:
+        from torch.nn.attention.flex_attention import create_block_mask
+    except ImportError as exc:  # pragma: no cover - guarded by runtime version
+        raise RuntimeError("FlexAttention is unavailable in this PyTorch build") from exc
+    total = video_sequence_length + action_sequence_length
+    cache_key = (
+        "fast_wam_training",
+        str(device),
+        video_sequence_length,
+        action_sequence_length,
+        video_tokens_per_frame,
+    )
+    block_mask = _FLEX_BLOCK_MASKS.get(cache_key)
+    if block_mask is None:
+        block_mask = create_block_mask(
+            _fast_wam_training_mask_mod(
+                video_sequence_length,
+                video_tokens_per_frame,
+            ),
+            B=None,
+            H=None,
+            Q_LEN=total,
+            KV_LEN=total,
+            device=str(device),
+            _compile=device.type == "cuda",
+        )
+        _FLEX_BLOCK_MASKS[cache_key] = block_mask
+    return block_mask
+
+
 def _masked_attention(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -628,6 +692,7 @@ def _masked_attention(
     *,
     fp32_attention: bool,
     backend: str = "sdpa",
+    flex_block_mask: Any | None = None,
 ) -> torch.Tensor:
     bsz, q_len, local_dim = q.shape
     head_dim = local_dim // local_heads
@@ -649,7 +714,11 @@ def _masked_attention(
             )
         except ImportError as exc:  # pragma: no cover - guarded by runtime version
             raise RuntimeError("FlexAttention is unavailable in this PyTorch build") from exc
-        if mask is None:
+        if flex_block_mask is not None:
+            if mask is not None:
+                raise ValueError("FlexAttention accepts either mask or flex_block_mask, not both")
+            block_mask = flex_block_mask
+        elif mask is None:
             block_mask = None
         else:
             bool_mask = mask.to(device=q.device, dtype=torch.bool)
@@ -811,7 +880,7 @@ class MoT(nn.Module):
         action_tokens = action_state["tokens"]
         video_length = video_tokens.shape[1]
         expected = video_length + action_tokens.shape[1]
-        if self.training_attention_backend != "structured_sdpa" and (
+        if self.training_attention_backend == "sdpa" and (
             attention_mask is None
             or attention_mask.shape != (expected, expected)
         ):
@@ -914,14 +983,25 @@ class MoT(nn.Module):
                 q = torch.cat([payload[3] for payload in expert_payloads], dim=1)
                 k = torch.cat([payload[4] for payload in expert_payloads], dim=1)
                 v = torch.cat([payload[5] for payload in expert_payloads], dim=1)
+                flex_block_mask = (
+                    _fast_wam_flex_block_mask(
+                        video_length,
+                        action_tokens.shape[1],
+                        tokens_per_frame,
+                        device=q.device,
+                    )
+                    if self.training_attention_backend == "flex"
+                    else None
+                )
                 mixed = _masked_attention(
                     q,
                     k,
                     v,
                     video_block.self_attn.local_heads,
-                    attention_mask,
+                    None if flex_block_mask is not None else attention_mask,
                     fp32_attention=False,
                     backend=self.training_attention_backend,
+                    flex_block_mask=flex_block_mask,
                 )
                 mixed_by_expert = (
                     mixed[:, :video_length],
@@ -1221,7 +1301,7 @@ class FastWAMModel(MegatronModule):
             attention_context_mask,
         )
         needs_attention_mask = (
-            self.fast_wam_config.training_attention_backend != "structured_sdpa"
+            self.fast_wam_config.training_attention_backend == "sdpa"
             or return_debug_tensors
         )
         attention_mask = (
