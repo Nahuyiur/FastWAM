@@ -17,6 +17,10 @@ VAE_CHECKPOINT="${VAE_CHECKPOINT:-/mnt/yuhan/FastWAM/checkpoints/Wan-AI/Wan2.2-T
 INITIAL_DCP="${INITIAL_DCP:-$ROOT_DIR/outputs/robocasa_megatron_assets/initial_dcp_bf16}"
 TRAIN_LATENT_CACHE="${TRAIN_LATENT_CACHE:-}"
 VALID_LATENT_CACHE="${VALID_LATENT_CACHE:-}"
+TRAIN_WEBDATASET="${TRAIN_WEBDATASET:-}"
+VALID_WEBDATASET="${VALID_WEBDATASET:-}"
+TRAIN_INDEX_FILE="${TRAIN_INDEX_FILE:-}"
+VALID_INDEX_FILE="${VALID_INDEX_FILE:-}"
 TASK_CONFIG="${TASK_CONFIG:-robocasa_acg_v1_fastwam_8gpu}"
 SAVE_DIR="${SAVE_DIR:-$ROOT_DIR/outputs/robocasa_megatron_training}"
 LOAD_DIR="${LOAD_DIR:-}"
@@ -77,11 +81,31 @@ if [ -n "$EXIT_INTERVAL" ]; then
   EXIT_ARGS+=(--exit-interval "$EXIT_INTERVAL")
 fi
 LATENT_ARGS=(--fast-wam-vae-checkpoint "$VAE_CHECKPOINT")
+if [ -n "$TRAIN_WEBDATASET" ] && { [ -n "$TRAIN_LATENT_CACHE" ] || [ -n "$TRAIN_INDEX_FILE" ]; }; then
+  echo "TRAIN_WEBDATASET is mutually exclusive with TRAIN_LATENT_CACHE/TRAIN_INDEX_FILE" >&2
+  exit 1
+fi
+if [ -n "$VALID_WEBDATASET" ] && { [ -n "$VALID_LATENT_CACHE" ] || [ -n "$VALID_INDEX_FILE" ]; }; then
+  echo "VALID_WEBDATASET is mutually exclusive with VALID_LATENT_CACHE/VALID_INDEX_FILE" >&2
+  exit 1
+fi
 if [ -n "$TRAIN_LATENT_CACHE" ]; then
   LATENT_ARGS+=(--fast-wam-robocasa-train-latent-cache "$TRAIN_LATENT_CACHE")
 fi
 if [ -n "$VALID_LATENT_CACHE" ]; then
   LATENT_ARGS+=(--fast-wam-robocasa-valid-latent-cache "$VALID_LATENT_CACHE")
+fi
+if [ -n "$TRAIN_WEBDATASET" ]; then
+  LATENT_ARGS+=(--fast-wam-robocasa-train-webdataset "$TRAIN_WEBDATASET")
+fi
+if [ -n "$VALID_WEBDATASET" ]; then
+  LATENT_ARGS+=(--fast-wam-robocasa-valid-webdataset "$VALID_WEBDATASET")
+fi
+if [ -n "$TRAIN_INDEX_FILE" ]; then
+  LATENT_ARGS+=(--fast-wam-robocasa-train-index-file "$TRAIN_INDEX_FILE")
+fi
+if [ -n "$VALID_INDEX_FILE" ]; then
+  LATENT_ARGS+=(--fast-wam-robocasa-valid-index-file "$VALID_INDEX_FILE")
 fi
 OVERLAP_ARGS=()
 if [ "$OVERLAP_PARAM_GATHER" = "1" ]; then

@@ -65,12 +65,15 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--samples-per-shard", type=int, default=1024)
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--source-index-file", default=None)
     args = parser.parse_args()
 
     rank, world, local_rank = _initialize_distributed()
     train_dataset, valid_dataset, cfg = build_robocasa_datasets(
         args.repo_root,
         args.task_config,
+        train_index_file=args.source_index_file if args.split == "train" else None,
+        valid_index_file=args.source_index_file if args.split == "valid" else None,
     )
     dataset = train_dataset if args.split == "train" else valid_dataset
     num_samples = len(dataset)
@@ -102,6 +105,16 @@ def main() -> None:
         "camera_keys": list(cfg.data.train.camera_keys),
         "frame_offsets": list(cfg.data.train.frame_offsets),
         "video_size": list(cfg.data.train.video_size),
+        "source_index_file": (
+            str(Path(args.source_index_file).expanduser().resolve())
+            if args.source_index_file
+            else None
+        ),
+        "source_index_sha256": (
+            _sha256(Path(args.source_index_file).expanduser().resolve())
+            if args.source_index_file
+            else None
+        ),
     }
     build_path = output / "build.json"
     if rank == 0:

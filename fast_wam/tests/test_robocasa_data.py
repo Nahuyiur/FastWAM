@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import json
 import sys
+import tarfile
 import types
 from types import SimpleNamespace
 
 import numpy as np
 import torch
 
+from fast_wam.train.prepare_robocasa_webdataset import (
+    _add_bytes,
+    _npy_bytes,
+    _npz_bytes,
+    _scan_shard,
+)
 from fast_wam.train.robocasa_data import RoboCasaLatentDataset
+from fast_wam.train.robocasa_webdataset import FORMAT_VERSION, RoboCasaWebDataset
 
 
 class _FakeRoboCasaDataset:
@@ -95,3 +103,95 @@ def test_latent_dataset_never_decodes_video(tmp_path, monkeypatch):
     assert sample["input_latents"].item() == 2.0
     assert sample["action"].shape == (2, 3)
     assert sample["proprio"].shape == (2, 4)
+
+
+def _build_webdataset(tmp_path, mode: str) -> RoboCasaWebDataset:
+    context_dir = tmp_path / "contexts"
+    context_dir.mkdir()
+    (context_dir / "task.npz").write_bytes(
+        _npz_bytes(
+            {
+                "context": torch.arange(10, dtype=torch.float32).view(2, 5),
+                "context_mask": torch.ones(2, dtype=torch.bool),
+            }
+        )
+    )
+    shard = tmp_path / "shard-00000.tar"
+    with tarfile.open(shard, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        descriptor = json.dumps(
+            {
+                "logical_index": 0,
+                "source_index": 17,
+                "context_id": "task",
+                "mode": mode,
+            }
+        ).encode()
+        _add_bytes(archive, "000000000.json", descriptor)
+        _add_bytes(
+            archive,
+            "000000000.metadata.npz",
+            _npz_bytes(
+                {
+                    "action": torch.zeros(2, 3),
+                    "proprio": torch.zeros(2, 4),
+                    "image_is_pad": torch.zeros(3, dtype=torch.bool),
+                    "action_is_pad": torch.zeros(2, dtype=torch.bool),
+                    "episode_index": torch.tensor(7),
+                    "window_start": torch.tensor(11),
+                }
+            ),
+        )
+        if mode == "online":
+            _add_bytes(
+                archive,
+                "000000000.video.npy",
+                _npy_bytes(torch.arange(12, dtype=torch.float32).view(3, 1, 2, 2)),
+            )
+        else:
+            latent = torch.tensor([1.5, -2.0], dtype=torch.bfloat16)
+            _add_bytes(
+                archive,
+                "000000000.latent.npy",
+                _npy_bytes(latent.view(torch.uint16)),
+            )
+    entries = _scan_shard(tmp_path, shard.name)
+    (tmp_path / "index.jsonl").write_text(json.dumps(entries[0]) + "\n")
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "format": FORMAT_VERSION,
+                "complete": True,
+                "mode": mode,
+                "num_samples": 1,
+                "index_file": "index.jsonl",
+                "contexts": {
+                    "task": {
+                        "file": "contexts/task.npz",
+                        "prompt": "Task: open the drawer",
+                    }
+                },
+            }
+        )
+    )
+    return RoboCasaWebDataset(tmp_path)
+
+
+def test_indexed_webdataset_online_round_trip(tmp_path):
+    sample = _build_webdataset(tmp_path, "online")[0]
+    assert sample["idx"].item() == 0
+    assert sample["source_idx"].item() == 17
+    assert sample["video"].dtype == torch.float32
+    assert sample["video"].shape == (3, 1, 2, 2)
+    assert sample["context"].shape == (2, 5)
+    assert sample["prompt"] == "Task: open the drawer"
+
+
+def test_indexed_webdataset_offline_preserves_bfloat16_bits(tmp_path):
+    sample = _build_webdataset(tmp_path, "offline")[0]
+    assert sample["input_latents"].dtype == torch.bfloat16
+    torch.testing.assert_close(
+        sample["input_latents"],
+        torch.tensor([1.5, -2.0], dtype=torch.bfloat16),
+        rtol=0,
+        atol=0,
+    )

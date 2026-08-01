@@ -31,6 +31,10 @@ def robocasa_extra_args(parser):
     )
     group.add_argument("--fast-wam-robocasa-train-latent-cache", type=str, default=None)
     group.add_argument("--fast-wam-robocasa-valid-latent-cache", type=str, default=None)
+    group.add_argument("--fast-wam-robocasa-train-webdataset", type=str, default=None)
+    group.add_argument("--fast-wam-robocasa-valid-webdataset", type=str, default=None)
+    group.add_argument("--fast-wam-robocasa-train-index-file", type=str, default=None)
+    group.add_argument("--fast-wam-robocasa-valid-index-file", type=str, default=None)
     return parser
 
 
@@ -42,6 +46,10 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
         args.fast_wam_robocasa_task_config,
         train_latent_cache=args.fast_wam_robocasa_train_latent_cache,
         valid_latent_cache=args.fast_wam_robocasa_valid_latent_cache,
+        train_webdataset=args.fast_wam_robocasa_train_webdataset,
+        valid_webdataset=args.fast_wam_robocasa_valid_webdataset,
+        train_index_file=args.fast_wam_robocasa_train_index_file,
+        valid_index_file=args.fast_wam_robocasa_valid_index_file,
     )
     expected_action = int(args.fast_wam_action_dim)
     expected_proprio = int(args.fast_wam_proprio_dim)
@@ -62,7 +70,8 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
         f"task_config={args.fast_wam_robocasa_task_config} "
         f"action_dim={expected_action} proprio_dim={expected_proprio} "
         f"cameras={list(cfg.data.train.camera_keys)} "
-        f"latents={'cached' if args.fast_wam_robocasa_train_latent_cache else 'online'}"
+        f"input={'webdataset' if args.fast_wam_robocasa_train_webdataset else 'ordinary'} "
+        f"latents={'cached' if ('input_latents' in sample) else 'online'}"
     )
     return (
         common._DatasetView(train_dataset, "train"),

@@ -13,6 +13,12 @@ import torch.distributed as dist
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 
+from .robocasa_webdataset import (
+    RoboCasaIndexedSubset,
+    RoboCasaWebDataset,
+    load_source_indices,
+)
+
 
 def _instantiate_rank_ordered(config, **kwargs):
     """Avoid all ranks opening the same metadata files at exactly the same time."""
@@ -73,9 +79,20 @@ class RoboCasaLatentCache:
 class RoboCasaLatentDataset(torch.utils.data.Dataset):
     """Attach cached VAE latents without decoding the source MP4 files."""
 
-    def __init__(self, dataset, latent_cache: str | Path):
+    def __init__(
+        self,
+        dataset,
+        latent_cache: str | Path,
+        source_indices: list[int] | None = None,
+    ):
         self.dataset = dataset
-        self.latent_cache = RoboCasaLatentCache(latent_cache, len(dataset))
+        self.source_indices = tuple(
+            range(len(dataset)) if source_indices is None else source_indices
+        )
+        self.latent_cache = RoboCasaLatentCache(
+            latent_cache,
+            len(self.source_indices),
+        )
         self.episodes = dataset.episodes
         required = (
             "windows",
@@ -94,19 +111,22 @@ class RoboCasaLatentDataset(torch.utils.data.Dataset):
             )
 
     def __len__(self):
-        return len(self.dataset)
+        return len(self.source_indices)
 
     def __getitem__(self, index):
-        sample_index = int(index)
+        logical_index = int(index)
         last_error: Exception | None = None
         for _ in range(int(getattr(self.dataset, "max_getitem_retry", 1))):
             try:
-                sample = self._get_metadata(sample_index)
-                sample["input_latents"] = self.latent_cache[sample_index]
+                source_index = self.source_indices[logical_index]
+                sample = self._get_metadata(source_index)
+                sample["idx"] = torch.tensor(logical_index, dtype=torch.long)
+                sample["source_idx"] = torch.tensor(source_index, dtype=torch.long)
+                sample["input_latents"] = self.latent_cache[logical_index]
                 return sample
             except Exception as error:
                 last_error = error
-                sample_index = int(np.random.randint(len(self)))
+                logical_index = int(np.random.randint(len(self)))
         raise RuntimeError(
             "Failed to load cached RoboCasa sample after metadata retries."
         ) from last_error
@@ -162,6 +182,10 @@ def build_robocasa_datasets(
     *,
     train_latent_cache: str | Path | None = None,
     valid_latent_cache: str | Path | None = None,
+    train_webdataset: str | Path | None = None,
+    valid_webdataset: str | Path | None = None,
+    train_index_file: str | Path | None = None,
+    valid_index_file: str | Path | None = None,
 ):
     """Instantiate the unchanged baseline train/validation dataset contracts."""
 
@@ -181,15 +205,43 @@ def build_robocasa_datasets(
     with initialize_config_dir(config_dir=str(config_dir), version_base="1.3"):
         cfg = compose(config_name="train", overrides=[f"task={task_config}"])
 
-    train_dataset = _instantiate_rank_ordered(cfg.data.train)
     train_stats = cfg.data.train.get("pretrained_norm_stats")
     val_stats = cfg.data.val.get("pretrained_norm_stats") or train_stats
-    val_dataset = _instantiate_rank_ordered(
-        cfg.data.val,
-        pretrained_norm_stats=val_stats,
-    )
-    if train_latent_cache:
-        train_dataset = RoboCasaLatentDataset(train_dataset, train_latent_cache)
-    if valid_latent_cache:
-        val_dataset = RoboCasaLatentDataset(val_dataset, valid_latent_cache)
+    if train_webdataset and (train_latent_cache or train_index_file):
+        raise ValueError(
+            "train_webdataset is mutually exclusive with train_latent_cache/train_index_file"
+        )
+    if valid_webdataset and (valid_latent_cache or valid_index_file):
+        raise ValueError(
+            "valid_webdataset is mutually exclusive with valid_latent_cache/valid_index_file"
+        )
+    if train_webdataset:
+        train_dataset = RoboCasaWebDataset(train_webdataset)
+    else:
+        train_dataset = _instantiate_rank_ordered(cfg.data.train)
+        train_indices = load_source_indices(train_index_file, len(train_dataset))
+        if train_latent_cache:
+            train_dataset = RoboCasaLatentDataset(
+                train_dataset,
+                train_latent_cache,
+                train_indices,
+            )
+        elif train_indices is not None:
+            train_dataset = RoboCasaIndexedSubset(train_dataset, train_indices)
+    if valid_webdataset:
+        val_dataset = RoboCasaWebDataset(valid_webdataset)
+    else:
+        val_dataset = _instantiate_rank_ordered(
+            cfg.data.val,
+            pretrained_norm_stats=val_stats,
+        )
+        valid_indices = load_source_indices(valid_index_file, len(val_dataset))
+        if valid_latent_cache:
+            val_dataset = RoboCasaLatentDataset(
+                val_dataset,
+                valid_latent_cache,
+                valid_indices,
+            )
+        elif valid_indices is not None:
+            val_dataset = RoboCasaIndexedSubset(val_dataset, valid_indices)
     return train_dataset, val_dataset, cfg

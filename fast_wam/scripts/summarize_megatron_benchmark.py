@@ -42,6 +42,7 @@ def main() -> None:
         "step_seconds_p90": ordered[int(0.9 * (len(ordered) - 1))],
         "step_seconds_min": min(steady),
         "step_seconds_max": max(steady),
+        "steady_step_seconds": steady,
     }
     output = Path(args.output)
     output.write_text(json.dumps(payload, indent=2) + "\n")

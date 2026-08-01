@@ -13,8 +13,10 @@ DP/TP 扩展到 4、8、16 卡，并使用可跨拓扑恢复的分布式 checkpo
 - RoboCasa baseline：本仓库提交 `f86adf7`，原始目录保持不动；
 - Megatron-Wan：`KuangzhiGe/Megatron-Wan` 的提交
   `2ed4ae185bfdb8368a7522895baa273554e9a535`；
-- 本分支：`megatron-fastwam-robocasa`；
-- 远端独立目录：`/mnt/yuhan/FastWAM_megatron_robocasa`。
+- 稳定父分支：`megatron-fastwam-robocasa`；
+- 本 WebDataset 实验分支：`megatron-fastwam-robocasa-webdataset`；
+- 稳定父目录：`/mnt/yuhan/FastWAM_megatron_robocasa`，保持不动；
+- 本 WebDataset 实验目录：`/mnt/yuhan/FastWAM_megatron_robocasa_webdataset`。
 
 `megatron/`、`wan/` 和 `fast_wam/` 是从上述 Megatron-Wan 提交引入的源码；
 RoboCasa baseline 的 `src/fastwam`、`configs/` 和数据定义没有被复制后再暗改。
@@ -101,6 +103,37 @@ attention 等价拆成三个 SDPA 调用；Megatron 负责的是 TP/DP、分布�
 中的 action/proprio/text metadata，并加载对应 latent，**不会先解码 MP4 再丢弃
 video**。该性质已有专门测试，且通过把 baseline `_load_video` 替换为强制抛错进行了
 真实集成验证。
+
+#### 3.3.1 WebDataset 四路输入实验
+
+本实验分支新增两种标准未压缩 tar shard：
+
+- `online WebDataset`：每个滑窗保存原数据管线产出的 float32 video 与小型 metadata，
+  训练时仍在线执行同一个冻结 Wan VAE；
+- `offline WebDataset`：每个滑窗保存 BF16 VAE latent 与相同 metadata，训练时跳过 VAE。
+
+文件使用 WebDataset 的 `<sample-key>.<extension>` 命名，但没有改成近似的无限流式
+shuffle。`fast_wam/train/robocasa_webdataset.py` 额外维护 tar member offset 的 JSONL
+索引，以 `os.pread` 做 map-style 随机访问，继续复用原来的
+`OfficialEpochBatchSampler`。因此 DP 分片、样本次序、consumed samples 和断点恢复合同
+不变。该实现不依赖第三方 `webdataset` Python 包。
+
+UMT5 context 单条约 2 MiB，但同任务完全相同；构建器按内容 hash 做任务级去重，
+不会在 286101 个窗口中重复保存。online video 则保持 float32 位级一致，不用
+float16/JPEG 换取虚假的吞吐提升。其代价是重叠窗口会重复保存 RGB，正式是否值得使用
+必须同时看速度和磁盘放大率。
+
+四路公平比较固定为同一组 `source_indices.json`：
+
+| 名称 | 样本容器 | VAE |
+|---|---|---|
+| ordinary online | 原 MP4/parquet | 在线 |
+| WebDataset online | indexed tar | 在线 |
+| ordinary offline | 原 metadata + flat BF16 latent shard | 离线 |
+| WebDataset offline | indexed tar | 离线 |
+
+`RoboCasaIndexedSubset` 把四条路径映射到相同的源窗口，并把逻辑 idx 统一为
+`0..N-1`。WebDataset 与普通路径互斥，启动器会拒绝同时设置，避免静默选错输入。
 
 ### 3.4 分布式训练与断点续训
 
@@ -196,6 +229,34 @@ bash fast_wam/scripts/prepare_robocasa_latents.sh
 
 cache 构建支持 shard、原子写入和 resume。必须等 `manifest.json` 中
 `complete=true` 才能用于正式训练。
+
+### 4.2.1 准备 WebDataset 四路 benchmark 资产
+
+先确认 4 张 GPU 没有其他任务，再执行：
+
+```bash
+cd /mnt/yuhan/FastWAM_megatron_robocasa_webdataset
+export PYTHON_BIN=/mnt/yuhan/envs/motus-rebuilt-v2_10/bin/python
+BENCH_SAMPLES=1024 GPUS_PER_NODE=4 \
+bash fast_wam/scripts/prepare_robocasa_webdataset_benchmark.sh
+```
+
+该入口先建立一份 seed 42 的固定窗口索引，再依次构建 online tar、普通 BF16 latent
+cache 和 offline tar。所有 shard 原子落盘，可按已有完整 shard 恢复。使用前还可运行：
+
+```bash
+$PYTHON_BIN fast_wam/scripts/verify_robocasa_webdataset.py \
+  --repo-root "$PWD" \
+  --webdataset outputs/robocasa_webdataset_benchmark_assets/webdataset_online
+```
+
+四路正式计时使用 3 次交替正序/逆序运行，降低缓存温度和运行次序偏差：
+
+```bash
+ASSET_ROOT="$PWD/outputs/robocasa_webdataset_benchmark_assets" \
+REPEATS=3 TRAIN_ITERS=160 WARMUP_ITERS=40 \
+bash fast_wam/scripts/benchmark_robocasa_webdataset_4way.sh
+```
 
 ### 4.3 4 卡训练
 
@@ -297,6 +358,9 @@ $PYTHON_BIN scripts/robocasa_acg_eval.py \
   全层参数梯度范数相对差 `0.4136%`，全层抽样梯度最大绝对差 `0.0234375`。显式
   `joint_action_video_attention=true` 同步到远端后又独立复跑 seed 17，通过相同门禁；
 - 远端最终代码的 25 个模型回归测试及 Python 编译检查均通过。
+- WebDataset 分支完整测试为 29 项通过；真实 RoboCasa online 样本的全部 tensor 与
+  普通路径逐元素一致，offline 样本的 BF16 latent 位级一致，两者均通过 2-worker
+  DataLoader 读取。该结论只证明数据合同，不替代 GPU 训练吞吐实测。
 
 严格断点测试关键结果：iteration 2 的 DCP 保存约 30.1 秒；恢复 load 约 20.6 秒；
 恢复后 iteration 精确为 2，下一步 consumed samples 从 8 增到 12；step 3 和 validation
