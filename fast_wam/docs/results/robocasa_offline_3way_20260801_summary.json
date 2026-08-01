@@ -1,0 +1,54 @@
+{
+  "root": "/mnt/yuhan/FastWAM_megatron_robocasa_webdataset/outputs/benchmark_robocasa_offline_3way_20260801_141326",
+  "global_batch_size": 4,
+  "modes": {
+    "ordinary_online": {
+      "num_repeats": 3,
+      "num_steady_steps": 360,
+      "repeat_step_seconds_mean": [
+        0.719545,
+        0.7463958333333333,
+        0.7268908333333334
+      ],
+      "step_seconds_mean": 0.7309438888888888,
+      "step_seconds_median": 0.7181500000000001,
+      "step_seconds_p90": 0.7432000000000001,
+      "repeat_mean_stddev": 0.013876680337023143,
+      "speedup_vs_ordinary_online": 1.0,
+      "speedup_vs_ordinary_offline": 0.9284559006277273,
+      "global_samples_per_second": 5.472376280593054
+    },
+    "ordinary_offline": {
+      "num_repeats": 3,
+      "num_steady_steps": 360,
+      "repeat_step_seconds_mean": [
+        0.6713641666666667,
+        0.6927158333333333,
+        0.6718675
+      ],
+      "step_seconds_mean": 0.6786491666666667,
+      "step_seconds_median": 0.6664,
+      "step_seconds_p90": 0.69,
+      "repeat_mean_stddev": 0.01218468996094872,
+      "speedup_vs_ordinary_online": 1.0770570786656661,
+      "speedup_vs_ordinary_offline": 1.0,
+      "global_samples_per_second": 5.894061610134838
+    },
+    "webdataset_offline": {
+      "num_repeats": 3,
+      "num_steady_steps": 360,
+      "repeat_step_seconds_mean": [
+        0.6773391666666666,
+        0.670945,
+        0.6708125
+      ],
+      "step_seconds_mean": 0.6730322222222221,
+      "step_seconds_median": 0.6655,
+      "step_seconds_p90": 0.6799,
+      "repeat_mean_stddev": 0.00373051161345837,
+      "speedup_vs_ordinary_online": 1.08604590501693,
+      "speedup_vs_ordinary_offline": 1.008345728865549,
+      "global_samples_per_second": 5.943251850249865
+    }
+  }
+}

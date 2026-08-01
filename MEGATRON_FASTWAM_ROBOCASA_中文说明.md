@@ -259,10 +259,14 @@ $PYTHON_BIN fast_wam/scripts/verify_robocasa_webdataset.py \
 
 ```bash
 ASSET_ROOT="$PWD/outputs/robocasa_offline_benchmark_assets" \
+INITIAL_DCP=/mnt/yuhan/FastWAM_megatron_robocasa/outputs/robocasa_megatron_assets/initial_dcp_bf16 \
 GLOBAL_BATCH_SIZE=4 \
 REPEATS=3 TRAIN_ITERS=160 WARMUP_ITERS=40 \
 bash fast_wam/scripts/benchmark_robocasa_offline_3way.sh
 ```
+
+WebDataset 实验目录不另行拷贝 12GB 的初始 DCP；`INITIAL_DCP` 只读指向稳定
+父目录的同一份权重，三种输入路线始终从完全相同的参数开始。
 
 ### 4.3 4 卡训练
 
@@ -413,6 +417,37 @@ ATTENTION_BACKEND=structured_sdpa TRAIN_ITERS=100 WARMUP_ITERS=20 \
 MICRO_BATCH_SIZE=1 GLOBAL_BATCH_SIZE=4 \
 bash fast_wam/scripts/benchmark_robocasa_megatron.sh
 ```
+
+### 5.3 离线 VAE 输入与 WebDataset 正式实测
+
+2026-08-01 在同一节点的 4 张 A800-SXM4-80GB 上完成三路对比。协议固定为
+`structured_sdpa`、global batch 4、microbatch 1、`num_workers=2`；每路 3 次、
+每次 160 step，丢弃前 40 step，并用正序/逆序/正序降低运行顺序偏差。
+九个 run 均为 `skipped=0` 和 `nan=0`。正式计时前，1024/1024 个真实样本的
+全部 tensor 都通过 `rtol=0, atol=0` 精确一致性检查，2-worker DataLoader 也通过。
+
+| 输入路线 | mean | median | P90 | repeat mean SD | 全局吞吐 | 相对 online |
+|---|---:|---:|---:|---:|---:|---:|
+| ordinary online VAE | 0.7309 s | 0.7182 s | 0.7432 s | 0.01388 s | 5.472 samples/s | 1.000x |
+| ordinary BF16 mmap | 0.6786 s | 0.6664 s | 0.6900 s | 0.01218 s | 5.894 samples/s | 1.077x |
+| WebDataset BF16 tar | 0.6730 s | 0.6655 s | 0.6799 s | 0.00373 s | 5.943 samples/s | 1.086x |
+
+离线 VAE 相对 online 的收益是真实的，但幅度只有约 7.7%--8.6%，因为 6B Joint
+模型的 forward/backward 才是主要耗时。WebDataset tar 相对连续 BF16 mmap 的
+mean 只快 `0.83%`，median 只快 `0.14%`。三次 repeat 中，tar 分别慢约
+`0.9%`、快约 `3.2%`、快约 `0.2%`；结果被第二次 ordinary offline 的慢 run
+明显影响，因此不能宣称 tar 有稳定加速。
+
+存储实测也不支持替换 mmap：1024 样本的纯 latent 为 `110.25 MiB`，相同样本的
+tar shard 为 `118.51 MiB`，由 `.npy` header、tar member header 和 512-byte 对齐导致
+`7.50%` 放大。外推到 286101 个 window，分别约为 `30.08 GiB` 和
+`32.34 GiB`，tar 多占 `2.26 GiB`。当前 self-contained WebDataset 还复制了 426 份
+context，pilot 额外占 `426 MiB`；它可改为引用公共 text cache，但不能消除 tar
+本身的 7.5% 结构开销。
+
+结论：本地高吞吐 NAS + map-style 随机索引条件下，正式训练应保留
+**ordinary BF16 mmap**。WebDataset offline 只在未来转向对象存储、远程顺序流或
+大规模多节点 shard 分发时再重新评估；当前不增加复杂度。
 
 ## 6. 当前局限与正式训练前门禁
 

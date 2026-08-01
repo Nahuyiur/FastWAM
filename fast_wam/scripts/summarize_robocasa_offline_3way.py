@@ -16,6 +16,11 @@ MODES = (
 )
 
 
+def percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    return ordered[int(fraction * (len(ordered) - 1))]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root")
@@ -49,14 +54,19 @@ def main() -> None:
             "repeat_step_seconds_mean": repeat_means,
             "step_seconds_mean": statistics.fmean(steps),
             "step_seconds_median": statistics.median(steps),
+            "step_seconds_p90": percentile(steps, 0.9),
             "repeat_mean_stddev": (
                 statistics.stdev(repeat_means) if len(repeat_means) > 1 else 0.0
             ),
         }
     baseline = statistics.fmean(all_steps["ordinary_online"])
+    ordinary_offline = statistics.fmean(all_steps["ordinary_offline"])
     for mode in MODES:
         mean = float(payload["modes"][mode]["step_seconds_mean"])
         payload["modes"][mode]["speedup_vs_ordinary_online"] = baseline / mean
+        payload["modes"][mode]["speedup_vs_ordinary_offline"] = (
+            ordinary_offline / mean
+        )
         payload["modes"][mode]["global_samples_per_second"] = (
             float(args.global_batch_size) / mean
         )
