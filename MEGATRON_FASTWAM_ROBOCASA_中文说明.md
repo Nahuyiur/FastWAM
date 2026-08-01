@@ -254,6 +254,7 @@ $PYTHON_BIN fast_wam/scripts/verify_robocasa_webdataset.py \
 
 ```bash
 ASSET_ROOT="$PWD/outputs/robocasa_webdataset_benchmark_assets" \
+GLOBAL_BATCH_SIZE=4 \
 REPEATS=3 TRAIN_ITERS=160 WARMUP_ITERS=40 \
 bash fast_wam/scripts/benchmark_robocasa_webdataset_4way.sh
 ```

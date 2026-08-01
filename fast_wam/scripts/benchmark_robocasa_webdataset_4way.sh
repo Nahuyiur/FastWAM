@@ -39,7 +39,7 @@ run_mode() {
   export GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
   export TP_SIZE="${TP_SIZE:-1}"
   export MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-1}"
-  export GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-32}"
+  export GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-4}"
   export NUM_WORKERS="${NUM_WORKERS:-2}"
   export MASTER_PORT="$((29700 + repeat * 10))"
   export TRAIN_INDEX_FILE=""
@@ -86,4 +86,5 @@ done
 
 python "$ROOT_DIR/fast_wam/scripts/summarize_robocasa_webdataset_4way.py" \
   "$BENCH_ROOT" \
+  --global-batch-size "${GLOBAL_BATCH_SIZE:-4}" \
   --output "$BENCH_ROOT/summary.json"

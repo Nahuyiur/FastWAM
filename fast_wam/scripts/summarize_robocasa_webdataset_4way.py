@@ -20,10 +20,15 @@ MODES = (
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root")
+    parser.add_argument("--global-batch-size", type=int, default=4)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     root = Path(args.root).expanduser().resolve()
-    payload = {"root": str(root), "modes": {}}
+    payload = {
+        "root": str(root),
+        "global_batch_size": int(args.global_batch_size),
+        "modes": {},
+    }
     all_steps: dict[str, list[float]] = {}
     for mode in MODES:
         summaries = [
@@ -53,7 +58,9 @@ def main() -> None:
     for mode in MODES:
         mean = float(payload["modes"][mode]["step_seconds_mean"])
         payload["modes"][mode]["speedup_vs_ordinary_online"] = baseline / mean
-        payload["modes"][mode]["global_samples_per_second"] = 32.0 / mean
+        payload["modes"][mode]["global_samples_per_second"] = (
+            float(args.global_batch_size) / mean
+        )
     output = Path(args.output)
     output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(payload, indent=2))
