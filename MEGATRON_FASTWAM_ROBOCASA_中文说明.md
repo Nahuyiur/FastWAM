@@ -104,13 +104,17 @@ attention 等价拆成三个 SDPA 调用；Megatron 负责的是 TP/DP、分布�
 video**。该性质已有专门测试，且通过把 baseline `_load_video` 替换为强制抛错进行了
 真实集成验证。
 
-#### 3.3.1 WebDataset 四路输入实验
+#### 3.3.1 WebDataset 离线输入实验
 
-本实验分支新增两种标准未压缩 tar shard：
+本实验分支实现了两种标准未压缩 tar shard：
 
 - `online WebDataset`：每个滑窗保存原数据管线产出的 float32 video 与小型 metadata，
   训练时仍在线执行同一个冻结 Wan VAE；
 - `offline WebDataset`：每个滑窗保存 BF16 VAE latent 与相同 metadata，训练时跳过 VAE。
+
+但正式实验只使用 VAE feature，因此不构建、不测速 `online WebDataset`。保留其代码仅
+用于说明一种“窗口级预解码 RGB cache”的理论上限；它预计需要约 2.82 TiB，而且把
+MP4 decode 与容器格式两种因素混在一起，不是当前正式方案。
 
 文件使用 WebDataset 的 `<sample-key>.<extension>` 命名，但没有改成近似的无限流式
 shuffle。`fast_wam/train/robocasa_webdataset.py` 额外维护 tar member offset 的 JSONL
@@ -123,12 +127,11 @@ UMT5 context 单条约 2 MiB，但同任务完全相同；构建器按内容 has
 float16/JPEG 换取虚假的吞吐提升。其代价是重叠窗口会重复保存 RGB，正式是否值得使用
 必须同时看速度和磁盘放大率。
 
-四路公平比较固定为同一组 `source_indices.json`：
+正式三路比较固定为同一组 `source_indices.json`：
 
 | 名称 | 样本容器 | VAE |
 |---|---|---|
 | ordinary online | 原 MP4/parquet | 在线 |
-| WebDataset online | indexed tar | 在线 |
 | ordinary offline | 原 metadata + flat BF16 latent shard | 离线 |
 | WebDataset offline | indexed tar | 离线 |
 
@@ -230,7 +233,7 @@ bash fast_wam/scripts/prepare_robocasa_latents.sh
 cache 构建支持 shard、原子写入和 resume。必须等 `manifest.json` 中
 `complete=true` 才能用于正式训练。
 
-### 4.2.1 准备 WebDataset 四路 benchmark 资产
+### 4.2.1 准备 WebDataset offline benchmark 资产
 
 先确认 4 张 GPU 没有其他任务，再执行：
 
@@ -238,25 +241,27 @@ cache 构建支持 shard、原子写入和 resume。必须等 `manifest.json` �
 cd /mnt/yuhan/FastWAM_megatron_robocasa_webdataset
 export PYTHON_BIN=/mnt/yuhan/envs/motus-rebuilt-v2_10/bin/python
 BENCH_SAMPLES=1024 GPUS_PER_NODE=4 \
-bash fast_wam/scripts/prepare_robocasa_webdataset_benchmark.sh
+bash fast_wam/scripts/prepare_robocasa_offline_benchmark.sh
 ```
 
-该入口先建立一份 seed 42 的固定窗口索引，再依次构建 online tar、普通 BF16 latent
-cache 和 offline tar。所有 shard 原子落盘，可按已有完整 shard 恢复。使用前还可运行：
+该入口先独立建立一份 seed 42 的固定窗口索引，再依次构建普通 BF16 latent cache 和
+offline tar，完全不会产生 RGB WebDataset。所有 shard 原子落盘，可按已有完整 shard
+恢复。使用前还可运行：
 
 ```bash
 $PYTHON_BIN fast_wam/scripts/verify_robocasa_webdataset.py \
   --repo-root "$PWD" \
-  --webdataset outputs/robocasa_webdataset_benchmark_assets/webdataset_online
+  --webdataset outputs/robocasa_offline_benchmark_assets/webdataset_offline \
+  --latent-cache outputs/robocasa_offline_benchmark_assets/ordinary_latents
 ```
 
-四路正式计时使用 3 次交替正序/逆序运行，降低缓存温度和运行次序偏差：
+三路正式计时使用 3 次交替正序/逆序运行，降低缓存温度和运行次序偏差：
 
 ```bash
-ASSET_ROOT="$PWD/outputs/robocasa_webdataset_benchmark_assets" \
+ASSET_ROOT="$PWD/outputs/robocasa_offline_benchmark_assets" \
 GLOBAL_BATCH_SIZE=4 \
 REPEATS=3 TRAIN_ITERS=160 WARMUP_ITERS=40 \
-bash fast_wam/scripts/benchmark_robocasa_webdataset_4way.sh
+bash fast_wam/scripts/benchmark_robocasa_offline_3way.sh
 ```
 
 ### 4.3 4 卡训练

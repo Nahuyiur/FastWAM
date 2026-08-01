@@ -3,11 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 STAMP="$(date +%Y%m%d_%H%M%S)"
-BENCH_ROOT="${BENCH_ROOT:-$ROOT_DIR/outputs/benchmark_robocasa_webdataset_4way_$STAMP}"
-ASSET_ROOT="${ASSET_ROOT:?Set ASSET_ROOT to the prepared four-way benchmark assets}"
-INDEX_FILE="${INDEX_FILE:-$ASSET_ROOT/webdataset_online/source_indices.json}"
+BENCH_ROOT="${BENCH_ROOT:-$ROOT_DIR/outputs/benchmark_robocasa_offline_3way_$STAMP}"
+ASSET_ROOT="${ASSET_ROOT:?Set ASSET_ROOT to the prepared offline benchmark assets}"
+INDEX_FILE="${INDEX_FILE:-$ASSET_ROOT/source_indices.json}"
 ORDINARY_LATENT_CACHE="${ORDINARY_LATENT_CACHE:-$ASSET_ROOT/ordinary_latents}"
-WDS_ONLINE="${WDS_ONLINE:-$ASSET_ROOT/webdataset_online}"
 WDS_OFFLINE="${WDS_OFFLINE:-$ASSET_ROOT/webdataset_offline}"
 REPEATS="${REPEATS:-3}"
 TRAIN_ITERS="${TRAIN_ITERS:-160}"
@@ -16,7 +15,6 @@ WARMUP_ITERS="${WARMUP_ITERS:-40}"
 for required in \
   "$INDEX_FILE" \
   "$ORDINARY_LATENT_CACHE/manifest.json" \
-  "$WDS_ONLINE/manifest.json" \
   "$WDS_OFFLINE/manifest.json"; do
   if [ ! -f "$required" ]; then
     echo "Missing benchmark asset: $required" >&2
@@ -49,9 +47,6 @@ run_mode() {
     ordinary_online)
       export TRAIN_INDEX_FILE="$INDEX_FILE"
       ;;
-    webdataset_online)
-      export TRAIN_WEBDATASET="$WDS_ONLINE"
-      ;;
     ordinary_offline)
       export TRAIN_INDEX_FILE="$INDEX_FILE"
       export TRAIN_LATENT_CACHE="$ORDINARY_LATENT_CACHE"
@@ -71,8 +66,8 @@ run_mode() {
     --output "$run_root/summary.json"
 }
 
-forward=(ordinary_online webdataset_online ordinary_offline webdataset_offline)
-reverse=(webdataset_offline ordinary_offline webdataset_online ordinary_online)
+forward=(ordinary_online ordinary_offline webdataset_offline)
+reverse=(webdataset_offline ordinary_offline ordinary_online)
 for repeat in $(seq 1 "$REPEATS"); do
   if [ $((repeat % 2)) -eq 1 ]; then
     order=("${forward[@]}")
@@ -84,7 +79,7 @@ for repeat in $(seq 1 "$REPEATS"); do
   done
 done
 
-python "$ROOT_DIR/fast_wam/scripts/summarize_robocasa_webdataset_4way.py" \
+python "$ROOT_DIR/fast_wam/scripts/summarize_robocasa_offline_3way.py" \
   "$BENCH_ROOT" \
   --global-batch-size "${GLOBAL_BATCH_SIZE:-4}" \
   --output "$BENCH_ROOT/summary.json"

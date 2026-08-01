@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate repeated four-way RoboCasa storage/VAE benchmarks."""
+"""Aggregate repeated RoboCasa ordinary-online/offline/WDS-offline benchmarks."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from pathlib import Path
 
 MODES = (
     "ordinary_online",
-    "webdataset_online",
     "ordinary_offline",
     "webdataset_offline",
 )

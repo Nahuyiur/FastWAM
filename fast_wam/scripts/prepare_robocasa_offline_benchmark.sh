@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 PYTHON_BIN="$(command -v "$PYTHON_BIN")"
-ASSET_ROOT="${ASSET_ROOT:-$ROOT_DIR/outputs/robocasa_webdataset_benchmark_assets}"
+ASSET_ROOT="${ASSET_ROOT:-$ROOT_DIR/outputs/robocasa_offline_benchmark_assets}"
 BENCH_SAMPLES="${BENCH_SAMPLES:-1024}"
 SAMPLES_PER_SHARD="${SAMPLES_PER_SHARD:-128}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
@@ -15,18 +15,15 @@ export PYTHONPATH="$ROOT_DIR:$ROOT_DIR/src:${PYTHONPATH:-}"
 export GIT_PYTHON_REFRESH=quiet
 mkdir -p "$ASSET_ROOT"
 
-"$PYTHON_BIN" -m fast_wam.train.prepare_robocasa_webdataset \
+INDEX_FILE="$ASSET_ROOT/source_indices.json"
+"$PYTHON_BIN" -m fast_wam.train.prepare_robocasa_indices \
   --repo-root "$ROOT_DIR" \
   --task-config "$TASK_CONFIG" \
   --split train \
-  --mode online \
-  --output "$ASSET_ROOT/webdataset_online" \
-  --max-samples "$BENCH_SAMPLES" \
-  --selection random \
+  --num-samples "$BENCH_SAMPLES" \
   --seed 42 \
-  --samples-per-shard "$SAMPLES_PER_SHARD"
+  --output "$INDEX_FILE"
 
-INDEX_FILE="$ASSET_ROOT/webdataset_online/source_indices.json"
 "$PYTHON_BIN" -m torch.distributed.run \
   --standalone \
   --nproc_per_node "$GPUS_PER_NODE" \
@@ -51,4 +48,4 @@ INDEX_FILE="$ASSET_ROOT/webdataset_online/source_indices.json"
   --source-index-file "$INDEX_FILE" \
   --samples-per-shard "$SAMPLES_PER_SHARD"
 
-echo "Prepared four-way benchmark assets under $ASSET_ROOT"
+echo "Prepared ordinary/WebDataset offline benchmark assets under $ASSET_ROOT"
