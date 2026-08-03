@@ -10,6 +10,7 @@ VAE="${VAE:-/mnt/yuhan/FastWAM/checkpoints/Wan-AI/Wan2.2-TI2V-5B/Wan2.2_VAE.pth}
 ROBOSUITE_REPO="${ROBOSUITE_REPO:-/mnt/yuhan/repos/robosuite}"
 ROBOCASA_REPO="${ROBOCASA_REPO:-/mnt/yuhan/repos/robocasa}"
 POLL_SECONDS="${POLL_SECONDS:-60}"
+IDLE_CONFIRMATIONS="${IDLE_CONFIRMATIONS:-2}"
 MIN_STEP="${MIN_STEP:-5000}"
 MAX_STEP="${MAX_STEP:-50000}"
 EXPECTED_EPISODES=16
@@ -27,6 +28,22 @@ export PYTHONPATH="${ROOT}/src:${ROBOSUITE_REPO}:${ROBOCASA_REPO}:${PYTHONPATH:-
 
 gpu_compute_busy() {
   nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | grep -Eq '[0-9]'
+}
+
+wait_for_idle_gpus() {
+  local consecutive=0
+  while (( consecutive < IDLE_CONFIRMATIONS )); do
+    if gpu_compute_busy; then
+      consecutive=0
+      echo "[watcher] waiting for all four eval GPUs; time=$(date -Is)"
+    else
+      consecutive=$((consecutive + 1))
+      echo "[watcher] idle confirmation ${consecutive}/${IDLE_CONFIRMATIONS}; time=$(date -Is)"
+    fi
+    if (( consecutive < IDLE_CONFIRMATIONS )); then
+      sleep "${POLL_SECONDS}"
+    fi
+  done
 }
 
 checkpoint_ready() {
@@ -117,10 +134,7 @@ while true; do
     if ! checkpoint_ready "${checkpoint}"; then
       continue
     fi
-    while gpu_compute_busy; do
-      echo "[watcher] waiting for all four eval GPUs; time=$(date -Is)"
-      sleep "${POLL_SECONDS}"
-    done
+    wait_for_idle_gpus
     run_checkpoint "${checkpoint}" "${step}"
   done < <(find "${TRAIN_RUN}" -maxdepth 1 -type d -name 'iter_[0-9]*' | sort -V)
 

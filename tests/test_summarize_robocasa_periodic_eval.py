@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).parents[1] / "scripts" / "summarize_robocasa_periodic_eval.py"
+SCRIPT = Path(__file__).parents[1] / "fast_wam" / "scripts" / "summarize_robocasa_periodic_eval.py"
 SPEC = importlib.util.spec_from_file_location("summarize_periodic_eval", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
