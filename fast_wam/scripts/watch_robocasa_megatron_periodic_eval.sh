@@ -11,6 +11,7 @@ ROBOSUITE_REPO="${ROBOSUITE_REPO:-/mnt/yuhan/repos/robosuite}"
 ROBOCASA_REPO="${ROBOCASA_REPO:-/mnt/yuhan/repos/robocasa}"
 POLL_SECONDS="${POLL_SECONDS:-60}"
 IDLE_CONFIRMATIONS="${IDLE_CONFIRMATIONS:-2}"
+ALLOW_SHARED_GPUS="${ALLOW_SHARED_GPUS:-0}"
 MIN_STEP="${MIN_STEP:-5000}"
 MAX_STEP="${MAX_STEP:-50000}"
 EXPECTED_EPISODES=16
@@ -31,6 +32,12 @@ gpu_compute_busy() {
 }
 
 wait_for_idle_gpus() {
+  if [[ "${ALLOW_SHARED_GPUS}" == "1" ]]; then
+    echo "[watcher] shared GPU mode enabled; existing compute processes are not stopped"
+    nvidia-smi --query-gpu=index,memory.used,memory.free,utilization.gpu \
+      --format=csv,noheader,nounits || true
+    return 0
+  fi
   local consecutive=0
   while (( consecutive < IDLE_CONFIRMATIONS )); do
     if gpu_compute_busy; then
