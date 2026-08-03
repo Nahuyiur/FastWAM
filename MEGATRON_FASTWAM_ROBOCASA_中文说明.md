@@ -290,6 +290,29 @@ TP_SIZE=4 GLOBAL_BATCH_SIZE=32 bash fast_wam/scripts/train_robocasa_megatron.sh
 
 `GLOBAL_BATCH_SIZE` 必须能被 `MICRO_BATCH_SIZE * DP_SIZE` 整除。
 
+#### 4.3.1 baseline 对齐的 4 卡 offline 50k
+
+正式推荐入口会先幂等生成完整 ordinary BF16 mmap cache，严格核验
+`complete=true`、286101 个样本、dtype 和 latent shape，随后才启动训练：
+
+```bash
+mkdir -p outputs/robocasa_megatron_offline50k_4gpu_20260803
+RUN_NAME=robocasa_megatron_offline50k_4gpu_20260803 \
+RUN_ROOT="$PWD/outputs/robocasa_megatron_offline50k_4gpu_20260803" \
+CACHE_ROOT="$PWD/outputs/robocasa_megatron_assets/latents_train_id_full" \
+nohup bash fast_wam/scripts/launch_robocasa_megatron_offline50k_4gpu.sh \
+  >outputs/robocasa_megatron_offline50k_4gpu_20260803/pipeline.log 2>&1 &
+```
+
+该入口固定 4 卡 TP1+DP4、microbatch 1、global batch 32、50000 step、BF16、
+AdamW betas `(0.9, 0.95)`、weight decay `0.01`、gradient clipping `1.0`、
+cosine scheduler、5% warmup、每 5000 step 保存。baseline 的 warmup 初值为
+`5e-5 / 2500 = 2e-8`，且 trainer 内部 eval 关闭；Megatron launcher 已按这两个
+合同修正，避免使用原先近似但不完全一致的 `1e-7` 和 200-step eval。
+
+流水线通过 `pipeline.lock` 防止同一输出目录重复运行；cache shard 可断点续建。
+只有 cache 校验通过后才会写 `CACHE_DONE` 并进入训练，训练结束后写 `DONE`。
+
 ### 4.4 8/16 卡建议
 
 如果每卡仍为 80GB，吞吐优先建议：

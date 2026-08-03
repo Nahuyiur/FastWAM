@@ -35,10 +35,16 @@ TRAIN_ITERS="${TRAIN_ITERS:-50000}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 ATTENTION_BACKEND="${ATTENTION_BACKEND:-structured_sdpa}"
 KERNEL_MODE="${KERNEL_MODE:-optimized}"
+LEARNING_RATE="${LEARNING_RATE:-5e-5}"
+MIN_LR="${MIN_LR:-5e-7}"
+LR_WARMUP_INIT="${LR_WARMUP_INIT:-2e-8}"
+LR_WARMUP_FRACTION="${LR_WARMUP_FRACTION:-0.05}"
+WEIGHT_DECAY="${WEIGHT_DECAY:-0.01}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-5000}"
 SAVE_CHECKPOINTS="${SAVE_CHECKPOINTS:-1}"
-EVAL_INTERVAL="${EVAL_INTERVAL:-200}"
-LOG_INTERVAL="${LOG_INTERVAL:-10}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-0}"
+EVAL_ITERS="${EVAL_ITERS:-1}"
+LOG_INTERVAL="${LOG_INTERVAL:-20}"
 EXIT_INTERVAL="${EXIT_INTERVAL:-}"
 OVERLAP_PARAM_GATHER="${OVERLAP_PARAM_GATHER:-1}"
 MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
@@ -79,6 +85,10 @@ fi
 EXIT_ARGS=()
 if [ -n "$EXIT_INTERVAL" ]; then
   EXIT_ARGS+=(--exit-interval "$EXIT_INTERVAL")
+fi
+EVAL_ARGS=()
+if [ "$EVAL_INTERVAL" -gt 0 ]; then
+  EVAL_ARGS+=(--eval-interval "$EVAL_INTERVAL" --eval-iters "$EVAL_ITERS")
 fi
 LATENT_ARGS=(--fast-wam-vae-checkpoint "$VAE_CHECKPOINT")
 if [ -n "$TRAIN_WEBDATASET" ] && { [ -n "$TRAIN_LATENT_CACHE" ] || [ -n "$TRAIN_INDEX_FILE" ]; }; then
@@ -153,13 +163,13 @@ fi
   --adam-beta1 0.9 \
   --adam-beta2 0.95 \
   --adam-eps 1e-8 \
-  --lr 5e-5 \
-  --min-lr 5e-7 \
-  --lr-warmup-init 1e-7 \
-  --lr-warmup-fraction 0.05 \
+  --lr "$LEARNING_RATE" \
+  --min-lr "$MIN_LR" \
+  --lr-warmup-init "$LR_WARMUP_INIT" \
+  --lr-warmup-fraction "$LR_WARMUP_FRACTION" \
   --lr-decay-style cosine \
   --lr-decay-iters "$TRAIN_ITERS" \
-  --weight-decay 0.01 \
+  --weight-decay "$WEIGHT_DECAY" \
   --clip-grad 1.0 \
   --train-iters "$TRAIN_ITERS" \
   --micro-batch-size "$MICRO_BATCH_SIZE" \
@@ -179,12 +189,11 @@ fi
   --hidden-dropout 0.0 \
   --log-interval "$LOG_INTERVAL" \
   --ckpt-format torch_dist \
-  --eval-interval "$EVAL_INTERVAL" \
-  --eval-iters 1 \
   --distributed-timeout-minutes 60 \
   "${LOAD_ARGS[@]}" \
   "${SAVE_ARGS[@]}" \
   "${EXIT_ARGS[@]}" \
+  "${EVAL_ARGS[@]}" \
   "${LATENT_ARGS[@]}" \
   "${OVERLAP_ARGS[@]}" \
   2>&1 | tee "$LOG_FILE"
