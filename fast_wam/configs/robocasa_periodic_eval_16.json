@@ -1,0 +1,22 @@
+{
+  "periodic_shard_0": {
+    "split": "target",
+    "num_trials": 2,
+    "tasks": ["OpenCabinet", "TurnOnSinkFaucet"]
+  },
+  "periodic_shard_1": {
+    "split": "target",
+    "num_trials": 2,
+    "tasks": ["OpenDrawer", "TurnOnElectricKettle"]
+  },
+  "periodic_shard_2": {
+    "split": "target",
+    "num_trials": 2,
+    "tasks": ["CloseFridge", "CloseToasterOvenDoor"]
+  },
+  "periodic_shard_3": {
+    "split": "target",
+    "num_trials": 2,
+    "tasks": ["PickPlaceCounterToCabinet", "SlideDishwasherRack"]
+  }
+}
