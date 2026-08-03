@@ -97,6 +97,11 @@ fi
 EVAL_ARGS=()
 if [ "$EVAL_INTERVAL" -gt 0 ]; then
   EVAL_ARGS+=(--eval-interval "$EVAL_INTERVAL" --eval-iters "$EVAL_ITERS")
+else
+  # Megatron still requires an integer eval_interval while sizing datasets,
+  # even when validation is disabled. Zero eval iters preserves baseline
+  # semantics without leaving eval_interval as None.
+  EVAL_ARGS+=(--eval-interval "$TRAIN_ITERS" --eval-iters 0)
 fi
 WANDB_ARGS=()
 if [ "$WANDB_ENABLED" = "1" ]; then

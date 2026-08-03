@@ -309,6 +309,9 @@ AdamW betas `(0.9, 0.95)`、weight decay `0.01`、gradient clipping `1.0`、
 cosine scheduler、5% warmup、每 5000 step 保存。baseline 的 warmup 初值为
 `5e-5 / 2500 = 2e-8`，且 trainer 内部 eval 关闭；Megatron launcher 已按这两个
 合同修正，避免使用原先近似但不完全一致的 `1e-7` 和 200-step eval。
+Megatron 在计算 train/valid/test 样本数时仍要求 `eval_interval` 为整数，因此关闭
+eval 时传入 `eval_interval=train_iters` 和 `eval_iters=0`。后者保证不会构建或运行
+验证迭代，前者只满足 Megatron 的参数合同，不改变 baseline 的训练语义。
 
 W&B 默认写入
 `ruiyuhan0110-southern-california-edison/robocasa-acg-fastwam`，run name 与
