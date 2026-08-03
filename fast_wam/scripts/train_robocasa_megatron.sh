@@ -45,6 +45,14 @@ SAVE_CHECKPOINTS="${SAVE_CHECKPOINTS:-1}"
 EVAL_INTERVAL="${EVAL_INTERVAL:-0}"
 EVAL_ITERS="${EVAL_ITERS:-1}"
 LOG_INTERVAL="${LOG_INTERVAL:-20}"
+WANDB_ENABLED="${WANDB_ENABLED:-0}"
+WANDB_PROJECT="${WANDB_PROJECT:-robocasa-acg-fastwam}"
+WANDB_EXP_NAME="${WANDB_EXP_NAME:-$(basename "$SAVE_DIR")}"
+WANDB_ENTITY="${WANDB_ENTITY:-}"
+WANDB_SAVE_DIR="${WANDB_SAVE_DIR:-$SAVE_DIR/wandb}"
+WANDB_RUN_ID="${WANDB_RUN_ID:-$WANDB_EXP_NAME}"
+WANDB_RESUME="${WANDB_RESUME:-allow}"
+WANDB_MODE="${WANDB_MODE:-online}"
 EXIT_INTERVAL="${EXIT_INTERVAL:-}"
 OVERLAP_PARAM_GATHER="${OVERLAP_PARAM_GATHER:-1}"
 MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
@@ -89,6 +97,23 @@ fi
 EVAL_ARGS=()
 if [ "$EVAL_INTERVAL" -gt 0 ]; then
   EVAL_ARGS+=(--eval-interval "$EVAL_INTERVAL" --eval-iters "$EVAL_ITERS")
+fi
+WANDB_ARGS=()
+if [ "$WANDB_ENABLED" = "1" ]; then
+  if [ -z "$WANDB_PROJECT" ] || [ -z "$WANDB_EXP_NAME" ]; then
+    echo "WANDB_PROJECT and WANDB_EXP_NAME must be non-empty when WANDB_ENABLED=1" >&2
+    exit 1
+  fi
+  mkdir -p "$WANDB_SAVE_DIR"
+  export WANDB_RUN_ID WANDB_RESUME WANDB_MODE
+  WANDB_ARGS+=(
+    --wandb-project "$WANDB_PROJECT"
+    --wandb-exp-name "$WANDB_EXP_NAME"
+    --wandb-save-dir "$WANDB_SAVE_DIR"
+  )
+  if [ -n "$WANDB_ENTITY" ]; then
+    WANDB_ARGS+=(--wandb-entity "$WANDB_ENTITY")
+  fi
 fi
 LATENT_ARGS=(--fast-wam-vae-checkpoint "$VAE_CHECKPOINT")
 if [ -n "$TRAIN_WEBDATASET" ] && { [ -n "$TRAIN_LATENT_CACHE" ] || [ -n "$TRAIN_INDEX_FILE" ]; }; then
@@ -194,6 +219,7 @@ fi
   "${SAVE_ARGS[@]}" \
   "${EXIT_ARGS[@]}" \
   "${EVAL_ARGS[@]}" \
+  "${WANDB_ARGS[@]}" \
   "${LATENT_ARGS[@]}" \
   "${OVERLAP_ARGS[@]}" \
   2>&1 | tee "$LOG_FILE"

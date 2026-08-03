@@ -310,6 +310,13 @@ cosine scheduler、5% warmup、每 5000 step 保存。baseline 的 warmup 初值
 `5e-5 / 2500 = 2e-8`，且 trainer 内部 eval 关闭；Megatron launcher 已按这两个
 合同修正，避免使用原先近似但不完全一致的 `1e-7` 和 200-step eval。
 
+W&B 默认写入
+`ruiyuhan0110-southern-california-edison/robocasa-acg-fastwam`，run name 与
+`RUN_NAME` 一致。启动器固定 `WANDB_RUN_ID`并使用 `resume=allow`，断点恢复
+不会创建重复曲线。API key 只由远端用户的 W&B 凭据存储提供，不写入仓库、
+启动命令或训练日志。正式 50k 入口会显式开启 W&B；通用训练脚本仍默认
+关闭，避免 benchmark 和 smoke test 意外创建 run。
+
 流水线通过 `pipeline.lock` 防止同一输出目录重复运行；cache shard 可断点续建。
 只有 cache 校验通过后才会写 `CACHE_DONE` 并进入训练，训练结束后写 `DONE`。
 
