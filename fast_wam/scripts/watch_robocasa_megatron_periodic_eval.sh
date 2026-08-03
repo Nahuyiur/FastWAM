@@ -16,13 +16,23 @@ MIN_STEP="${MIN_STEP:-5000}"
 MAX_STEP="${MAX_STEP:-50000}"
 EXPECTED_EPISODES=16
 WANDB_RUN_ID="${WANDB_RUN_ID:-robocasa_megatron_offline50k_4gpu_20260803_periodic_eval}"
+RENDER_BACKEND="${RENDER_BACKEND:-egl}"
+OSMESA_ROOT="${OSMESA_ROOT:-${ROOT}/.runtime/osmesa/root}"
 
 mkdir -p "${OUT_ROOT}"
 exec >> "${OUT_ROOT}/watcher.log" 2>&1
-echo "[watcher] started $(date -Is) host=$(hostname)"
+echo "[watcher] started $(date -Is) host=$(hostname) render_backend=${RENDER_BACKEND}"
 
-export MUJOCO_GL=egl
-export PYOPENGL_PLATFORM=egl
+export MUJOCO_GL="${RENDER_BACKEND}"
+export PYOPENGL_PLATFORM="${RENDER_BACKEND}"
+if [[ "${RENDER_BACKEND}" == "osmesa" ]]; then
+  OSMESA_LIB="${OSMESA_ROOT}/usr/lib/x86_64-linux-gnu"
+  [[ -s "${OSMESA_LIB}/libOSMesa.so.8" ]] || {
+    echo "[watcher] missing user-space OSMesa library: ${OSMESA_LIB}/libOSMesa.so.8"
+    exit 2
+  }
+  export LD_LIBRARY_PATH="${OSMESA_LIB}:${LD_LIBRARY_PATH:-}"
+fi
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="${ROOT}/src:${ROBOSUITE_REPO}:${ROBOCASA_REPO}:${PYTHONPATH:-}"
