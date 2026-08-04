@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="${ROOT:-/mnt/yuhan/FastWAM_megatron_robocasa_webdataset}"
 TRAIN_RUN="${TRAIN_RUN:-${ROOT}/outputs/robocasa_megatron_offline50k_4gpu_20260803}"
-OUT_ROOT="${OUT_ROOT:-${ROOT}/outputs/robocasa_megatron_offline50k_4gpu_20260803_periodic_eval16}"
+OUT_ROOT="${OUT_ROOT:-${ROOT}/outputs/robocasa_megatron_offline50k_4gpu_20260803_periodic_eval16_baseline_v1}"
 PLAN="${PLAN:-${ROOT}/fast_wam/configs/robocasa_periodic_eval_16.json}"
 PYTHON="${PYTHON:-/mnt/yuhan/envs/motus-rebuilt-v2_10/bin/python}"
 VAE="${VAE:-/mnt/yuhan/FastWAM/checkpoints/Wan-AI/Wan2.2-TI2V-5B/Wan2.2_VAE.pth}"
@@ -15,16 +15,28 @@ ALLOW_SHARED_GPUS="${ALLOW_SHARED_GPUS:-0}"
 MIN_STEP="${MIN_STEP:-5000}"
 MAX_STEP="${MAX_STEP:-50000}"
 EXPECTED_EPISODES=16
-WANDB_RUN_ID="${WANDB_RUN_ID:-robocasa_megatron_offline50k_4gpu_20260803_periodic_eval}"
+WANDB_RUN_ID="${WANDB_RUN_ID:-robocasa_megatron_offline50k_4gpu_20260803_periodic_eval_baseline_v1}"
 RENDER_BACKEND="${RENDER_BACKEND:-egl}"
 OSMESA_ROOT="${OSMESA_ROOT:-${ROOT}/.runtime/osmesa/root}"
+FASTWAM_REPLAN_STEPS="${FASTWAM_REPLAN_STEPS:-5}"
+FASTWAM_INFER_STEPS="${FASTWAM_INFER_STEPS:-10}"
+PROTOCOL_TAG="${PROTOCOL_TAG:-fastwam_baseline_v1}"
+EXPECTED_ATTENTION_BACKEND="${EXPECTED_ATTENTION_BACKEND:-structured_sdpa}"
+EXPECTED_KERNEL_MODE="${EXPECTED_KERNEL_MODE:-optimized}"
+NVIDIA_EGL_VENDOR_JSON="${NVIDIA_EGL_VENDOR_JSON:-${ROOT}/fast_wam/runtime/10_nvidia.json}"
+NVIDIA_DRIVER_VERSION="${NVIDIA_DRIVER_VERSION:-$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1 | tr -d ' ')}"
+NVIDIA_EGL_ROOT="${NVIDIA_EGL_ROOT:-${ROOT}/.runtime/nvidia-egl-${NVIDIA_DRIVER_VERSION}/root/usr/lib/x86_64-linux-gnu}"
 
 mkdir -p "${OUT_ROOT}"
 exec >> "${OUT_ROOT}/watcher.log" 2>&1
-echo "[watcher] started $(date -Is) host=$(hostname) render_backend=${RENDER_BACKEND}"
+echo "[watcher] started $(date -Is) host=$(hostname) render_backend=${RENDER_BACKEND} protocol=${PROTOCOL_TAG} replan_steps=${FASTWAM_REPLAN_STEPS} inference_steps=${FASTWAM_INFER_STEPS}"
 
 export MUJOCO_GL="${RENDER_BACKEND}"
 export PYOPENGL_PLATFORM="${RENDER_BACKEND}"
+if [[ "${PROTOCOL_TAG}" == "fastwam_baseline_v1" && "${RENDER_BACKEND}" != "egl" ]]; then
+  echo "[watcher] ${PROTOCOL_TAG} requires the baseline EGL renderer; got ${RENDER_BACKEND}" >&2
+  exit 2
+fi
 if [[ "${RENDER_BACKEND}" == "osmesa" ]]; then
   OSMESA_LIB="${OSMESA_ROOT}/usr/lib/x86_64-linux-gnu"
   [[ -s "${OSMESA_LIB}/libOSMesa.so.8" ]] || {
@@ -36,6 +48,24 @@ fi
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="${ROOT}/src:${ROBOSUITE_REPO}:${ROBOCASA_REPO}:${PYTHONPATH:-}"
+
+if [[ "${RENDER_BACKEND}" == "egl" ]]; then
+  [[ -s "${NVIDIA_EGL_VENDOR_JSON}" ]] || {
+    echo "[watcher] missing NVIDIA EGL vendor descriptor: ${NVIDIA_EGL_VENDOR_JSON}" >&2
+    exit 2
+  }
+  [[ -s "${NVIDIA_EGL_ROOT}/libEGL_nvidia.so.${NVIDIA_DRIVER_VERSION}" ]] || {
+    echo "[watcher] missing user-space NVIDIA EGL runtime under ${NVIDIA_EGL_ROOT}; run fast_wam/scripts/prepare_nvidia_egl_runtime.sh" >&2
+    exit 2
+  }
+  [[ -s "${NVIDIA_EGL_ROOT}/libnvidia-eglcore.so.${NVIDIA_DRIVER_VERSION}" ]] || {
+    echo "[watcher] incomplete user-space NVIDIA EGL runtime under ${NVIDIA_EGL_ROOT}" >&2
+    exit 2
+  }
+  export LD_LIBRARY_PATH="${NVIDIA_EGL_ROOT}:${LD_LIBRARY_PATH:-}"
+  export __EGL_VENDOR_LIBRARY_FILENAMES="${NVIDIA_EGL_VENDOR_JSON}"
+  "${PYTHON}" -c 'import OpenGL.EGL; print("robocasa_eval_egl_import_ok")'
+fi
 
 gpu_compute_busy() {
   nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | grep -Eq '[0-9]'
@@ -93,7 +123,7 @@ run_checkpoint() {
         --bucket "periodic_shard_${shard}" \
         --output-dir "${shard_dir}" \
         --seed 7 \
-        --replan-steps 32 \
+        --replan-steps "${FASTWAM_REPLAN_STEPS}" \
         --render-every 2 \
         --video-policy all \
         --fastwam-repo "${ROOT}" \
@@ -103,7 +133,7 @@ run_checkpoint() {
         --fastwam-mixed-precision bf16 \
         --fastwam-num-video-frames 9 \
         --fastwam-action-horizon 32 \
-        --fastwam-num-inference-steps 20 \
+        --fastwam-num-inference-steps "${FASTWAM_INFER_STEPS}" \
         --fastwam-action-dim 12 \
         --fastwam-proprio-dim 16
     ) > "${output}/logs/shard_$(printf '%02d' "${shard}").log" 2>&1 &
@@ -124,6 +154,12 @@ run_checkpoint() {
     --root "${output}" \
     --checkpoint-step "${step}" \
     --expected-episodes "${EXPECTED_EPISODES}" \
+    --expected-replan-steps "${FASTWAM_REPLAN_STEPS}" \
+    --expected-inference-steps "${FASTWAM_INFER_STEPS}" \
+    --protocol-tag "${PROTOCOL_TAG}" \
+    --expected-attention-backend "${EXPECTED_ATTENTION_BACKEND}" \
+    --expected-kernel-mode "${EXPECTED_KERNEL_MODE}" \
+    --expected-render-backend "${RENDER_BACKEND}" \
     --wandb-entity ruiyuhan0110-southern-california-edison \
     --wandb-project robocasa-acg-fastwam \
     --wandb-run-id "${WANDB_RUN_ID}" \

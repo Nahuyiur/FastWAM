@@ -16,14 +16,66 @@ def read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def summarize(root: Path, expected_episodes: int) -> tuple[dict, list[dict], list[Path]]:
+def summarize(
+    root: Path,
+    expected_episodes: int,
+    *,
+    expected_replan_steps: int,
+    expected_inference_steps: int,
+    protocol_tag: str,
+    expected_attention_backend: str,
+    expected_kernel_mode: str,
+    expected_render_backend: str,
+) -> tuple[dict, list[dict], list[Path]]:
     rows: list[dict] = []
     errors: list[dict] = []
     videos: list[Path] = []
+    protocol_errors: list[str] = []
     for shard in sorted(root.glob("shard_*")):
         rows.extend(read_jsonl(shard / "episode_results.jsonl"))
         errors.extend(read_jsonl(shard / "errors.jsonl"))
         videos.extend(path for path in (shard / "videos").rglob("*.mp4") if path.stat().st_size > 0)
+        config_path = shard / "eval_config.json"
+        if not config_path.is_file():
+            protocol_errors.append(f"{shard.name}: missing eval_config.json")
+            continue
+        config = json.loads(config_path.read_text())
+        if int(config.get("replan_steps", -1)) != expected_replan_steps:
+            protocol_errors.append(
+                f"{shard.name}: replan_steps={config.get('replan_steps')} "
+                f"expected={expected_replan_steps}"
+            )
+        if int(config.get("fastwam_num_inference_steps", -1)) != expected_inference_steps:
+            protocol_errors.append(
+                f"{shard.name}: inference_steps={config.get('fastwam_num_inference_steps')} "
+                f"expected={expected_inference_steps}"
+            )
+        if config.get("render_backend") != expected_render_backend:
+            protocol_errors.append(
+                f"{shard.name}: render_backend={config.get('render_backend')} "
+                f"expected={expected_render_backend}"
+            )
+        runtime = config.get("policy_runtime_contract") or {}
+        if runtime.get("eval_num_inference_steps") != expected_inference_steps:
+            protocol_errors.append(
+                f"{shard.name}: runtime inference contract was not restored"
+            )
+        if runtime.get("checkpoint_joint_action_video_attention") is not True:
+            protocol_errors.append(
+                f"{shard.name}: checkpoint joint-attention contract is not true"
+            )
+        if runtime.get("checkpoint_training_attention_backend") != expected_attention_backend:
+            protocol_errors.append(
+                f"{shard.name}: checkpoint attention backend="
+                f"{runtime.get('checkpoint_training_attention_backend')} "
+                f"expected={expected_attention_backend}"
+            )
+        if runtime.get("checkpoint_training_kernel_mode") != expected_kernel_mode:
+            protocol_errors.append(
+                f"{shard.name}: checkpoint kernel mode="
+                f"{runtime.get('checkpoint_training_kernel_mode')} "
+                f"expected={expected_kernel_mode}"
+            )
 
     by_bucket: dict[str, list[bool]] = defaultdict(list)
     by_task: dict[str, list[bool]] = defaultdict(list)
@@ -40,6 +92,8 @@ def summarize(root: Path, expected_episodes: int) -> tuple[dict, list[dict], lis
         "num_episodes": len(rows),
         "num_errors": len(errors),
         "num_videos": len(videos),
+        "protocol_tag": protocol_tag,
+        "protocol_errors": protocol_errors,
         "num_successes": sum(bool(row.get("success")) for row in rows),
         "success_rate": rate([bool(row.get("success")) for row in rows]),
         "by_bucket": {
@@ -94,12 +148,27 @@ def main() -> int:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--checkpoint-step", required=True, type=int)
     parser.add_argument("--expected-episodes", type=int, default=16)
+    parser.add_argument("--expected-replan-steps", type=int, default=5)
+    parser.add_argument("--expected-inference-steps", type=int, default=10)
+    parser.add_argument("--protocol-tag", default="fastwam_baseline_v1")
+    parser.add_argument("--expected-attention-backend", default="structured_sdpa")
+    parser.add_argument("--expected-kernel-mode", default="optimized")
+    parser.add_argument("--expected-render-backend", default="egl")
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-project", default="robocasa-acg-fastwam")
     parser.add_argument("--wandb-run-id", default=None)
     args = parser.parse_args()
 
-    summary, rows, videos = summarize(args.root, args.expected_episodes)
+    summary, rows, videos = summarize(
+        args.root,
+        args.expected_episodes,
+        expected_replan_steps=args.expected_replan_steps,
+        expected_inference_steps=args.expected_inference_steps,
+        protocol_tag=args.protocol_tag,
+        expected_attention_backend=args.expected_attention_backend,
+        expected_kernel_mode=args.expected_kernel_mode,
+        expected_render_backend=args.expected_render_backend,
+    )
     (args.root / "episode_results.jsonl").write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
     )
@@ -108,6 +177,7 @@ def main() -> int:
         summary["num_episodes"] == args.expected_episodes
         and summary["num_errors"] == 0
         and summary["num_videos"] == args.expected_episodes
+        and not summary["protocol_errors"]
     )
     if not valid:
         print(json.dumps(summary, indent=2))

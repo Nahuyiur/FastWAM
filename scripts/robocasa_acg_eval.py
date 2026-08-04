@@ -36,6 +36,7 @@ from robocasa_acg_policy_backends import (
     WebsocketPolicyClient,
     convert_to_uint8,
     preprocess_image,
+    validate_camera_frame,
 )
 
 try:
@@ -548,6 +549,7 @@ def run_episode(
     save_video: bool,
     video_path: pathlib.Path | None,
     disturbance_threshold: float,
+    validate_camera_integrity: bool,
 ) -> EpisodeResult:
     obs, info = env.reset(seed=seed)
     task_lang = obs.get("annotation.human.task_description")
@@ -574,9 +576,16 @@ def run_episode(
             ee_positions.append(ee)
 
         if not action_plan:
-            img = preprocess_image(obs["video.robot0_agentview_left"], resize_size)
-            wrist_img = preprocess_image(obs["video.robot0_eye_in_hand"], resize_size)
-            img_right = preprocess_image(obs["video.robot0_agentview_right"], resize_size)
+            raw_left = obs["video.robot0_agentview_left"]
+            raw_wrist = obs["video.robot0_eye_in_hand"]
+            raw_right = obs["video.robot0_agentview_right"]
+            if validate_camera_integrity:
+                validate_camera_frame(raw_left, "agentview_left")
+                validate_camera_frame(raw_wrist, "eye_in_hand")
+                validate_camera_frame(raw_right, "agentview_right")
+            img = preprocess_image(raw_left, resize_size)
+            wrist_img = preprocess_image(raw_wrist, resize_size)
+            img_right = preprocess_image(raw_right, resize_size)
             element = {
                 "observation/base_image": img,
                 "observation/wrist_image": wrist_img,
@@ -615,7 +624,10 @@ def run_episode(
 
         if save_video and video_path is not None and (t % render_every == 0 or done or t == horizon - 1):
             t_video = time.perf_counter()
-            frame = convert_to_uint8(np.ascontiguousarray(env.render()))
+            raw_frame = np.ascontiguousarray(env.render())
+            if validate_camera_integrity:
+                validate_camera_frame(raw_frame, "env.render")
+            frame = convert_to_uint8(raw_frame)
             replay_images.append(frame)
             video_write_s += time.perf_counter() - t_video
 
@@ -782,6 +794,13 @@ def main() -> None:
     parser.add_argument("--render-every", type=int, default=2)
     parser.add_argument("--video-policy", choices=["all", "success_failure_sample", "none"], default="all")
     parser.add_argument("--disturbance-threshold", type=float, default=0.05)
+    parser.add_argument(
+        "--no-camera-integrity-check",
+        action="store_false",
+        dest="validate_camera_integrity",
+        help="Diagnostic escape hatch only; normal evaluation fails closed on corrupted RGB frames.",
+    )
+    parser.set_defaults(validate_camera_integrity=True)
     parser.add_argument("--fastwam-repo", default="/mnt/yuhan/FastWAM_robocasa_acg_8gpu")
     parser.add_argument("--fastwam-task-config", default="robocasa_acg_v1_fastwam_8gpu")
     parser.add_argument("--fastwam-checkpoint", default=None)
@@ -828,6 +847,7 @@ def main() -> None:
         "buckets": buckets,
         "plan": {k: plan[k] for k in buckets},
         "resolved_action_layout": resolved_action_layout,
+        "render_backend": os.environ.get("MUJOCO_GL"),
     }
     (output_dir / "eval_config.json").write_text(
         json.dumps(run_config, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -873,6 +893,10 @@ def main() -> None:
             num_inference_steps=args.fastwam_num_inference_steps,
             seed=args.seed,
         )
+    run_config["policy_runtime_contract"] = getattr(client, "runtime_contract", None)
+    (output_dir / "eval_config.json").write_text(
+        json.dumps(run_config, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     rows: list[dict[str, Any]] = []
     manifest_rows: list[dict[str, Any]] = []
 
@@ -922,6 +946,7 @@ def main() -> None:
                         save_video=args.video_policy != "none",
                         video_path=video_path,
                         disturbance_threshold=args.disturbance_threshold,
+                        validate_camera_integrity=args.validate_camera_integrity,
                     )
                     suffix = "success" if result.success else "failure"
                     if result.video_path:

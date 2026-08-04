@@ -68,6 +68,7 @@ def main() -> None:
         action_dim=12,
         proprio_dim=16,
         action_horizon=32,
+        num_video_frames=9,
         num_inference_steps=int(args.num_inference_steps),
         seed=int(args.seed),
     )

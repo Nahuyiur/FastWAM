@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -160,6 +160,61 @@ class FastWAMConfig:
             loss_lambda_action=float(raw.get("loss_lambda_action", 1.0)),
             joint_action_video_attention=bool(
                 raw.get("joint_action_video_attention", False)
+            ),
+        )
+
+    @classmethod
+    def from_megatron_checkpoint(cls, checkpoint: str | Path) -> "FastWAMConfig":
+        """Restore the model contract serialized with a Megatron training DCP.
+
+        Megatron stores the training arguments in ``common.pt`` rather than a
+        Fast-WAM ``config.json``.  Evaluation must reconstruct the model with
+        those arguments; silently falling back to this class' defaults can
+        select a different attention path or kernel implementation.
+        """
+
+        import torch
+
+        path = Path(checkpoint)
+        tracker = path / "latest_checkpointed_iteration.txt"
+        if tracker.is_file():
+            path = path / f"iter_{int(tracker.read_text().strip()):07d}"
+        common_path = path / "common.pt"
+        if not common_path.is_file():
+            raise FileNotFoundError(
+                f"Megatron Fast-WAM checkpoint is missing common.pt: {common_path}"
+            )
+        payload = torch.load(common_path, map_location="cpu", weights_only=False)
+        args = payload.get("args") if isinstance(payload, dict) else None
+        if args is None:
+            raise ValueError(f"Megatron checkpoint has no serialized args: {common_path}")
+
+        def argument(name: str) -> Any:
+            if isinstance(args, dict):
+                value = args.get(name)
+            else:
+                value = getattr(args, name, None)
+            if value is None:
+                raise ValueError(
+                    f"Megatron checkpoint is missing required training argument {name!r}: "
+                    f"{common_path}"
+                )
+            return value
+
+        base = cls()
+        return replace(
+            base,
+            action=replace(
+                base.action,
+                action_dim=int(argument("fast_wam_action_dim")),
+            ),
+            proprio_dim=int(argument("fast_wam_proprio_dim")),
+            training_attention_backend=str(
+                argument("fast_wam_attention_backend")
+            ),
+            training_kernel_mode=str(argument("fast_wam_kernel_mode")),
+            joint_action_video_attention=bool(
+                argument("fast_wam_joint_action_video_attention")
             ),
         )
 

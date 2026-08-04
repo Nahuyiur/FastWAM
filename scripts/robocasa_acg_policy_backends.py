@@ -56,6 +56,69 @@ def preprocess_image(image: np.ndarray, resize_size: int) -> np.ndarray:
     return resize_with_pad_fallback(image, resize_size, resize_size)
 
 
+class CameraFrameIntegrityError(RuntimeError):
+    """Raised when a renderer returns a malformed or implausible RGB frame."""
+
+
+def camera_frame_integrity_metrics(image: np.ndarray) -> dict[str, float | list[int]]:
+    """Return conservative corruption diagnostics for a RoboCasa RGB frame."""
+
+    raw = np.asarray(image)
+    if raw.ndim != 3 or raw.shape[2] != 3:
+        raise CameraFrameIntegrityError(
+            f"expected HWC RGB frame, got shape={tuple(raw.shape)} dtype={raw.dtype}"
+        )
+    if raw.shape[0] < 32 or raw.shape[1] < 32:
+        raise CameraFrameIntegrityError(f"RGB frame is unexpectedly small: {tuple(raw.shape)}")
+    if np.issubdtype(raw.dtype, np.floating) and not np.isfinite(raw).all():
+        raise CameraFrameIntegrityError("RGB frame contains NaN or Inf")
+
+    value = convert_to_uint8(raw).astype(np.float32, copy=False)
+    horizontal_delta = float(np.abs(np.diff(value, axis=1)).mean())
+    vertical_delta = float(np.abs(np.diff(value, axis=0)).mean())
+    mean_neighbor_delta = 0.5 * (horizontal_delta + vertical_delta)
+    intensity_std = float(value.std())
+    edge_to_std_ratio = mean_neighbor_delta / max(intensity_std, 1.0e-6)
+
+    quantized = (value.astype(np.uint8) >> 4).astype(np.int32)
+    bins = quantized[..., 0] * 256 + quantized[..., 1] * 16 + quantized[..., 2]
+    histogram = np.bincount(bins.reshape(-1), minlength=4096)
+    probability = histogram[histogram > 0].astype(np.float64)
+    probability /= probability.sum()
+    coarse_rgb_entropy = float(-(probability * np.log2(probability)).sum())
+    return {
+        "shape": [int(v) for v in value.shape],
+        "intensity_std": intensity_std,
+        "horizontal_neighbor_delta": horizontal_delta,
+        "vertical_neighbor_delta": vertical_delta,
+        "mean_neighbor_delta": mean_neighbor_delta,
+        "edge_to_std_ratio": edge_to_std_ratio,
+        "coarse_rgb_entropy": coarse_rgb_entropy,
+    }
+
+
+def validate_camera_frame(image: np.ndarray, camera_name: str) -> dict[str, float | list[int]]:
+    """Fail closed on the stripe/noise/blank frames observed with broken OSMesa."""
+
+    metrics = camera_frame_integrity_metrics(image)
+    reasons: list[str] = []
+    if float(metrics["mean_neighbor_delta"]) > 24.0:
+        reasons.append("excessive adjacent-pixel variation")
+    if float(metrics["edge_to_std_ratio"]) > 0.35:
+        reasons.append("edge energy is implausibly high relative to image variance")
+    if (
+        float(metrics["coarse_rgb_entropy"]) < 1.25
+        and float(metrics["intensity_std"]) < 30.0
+    ):
+        reasons.append("frame is nearly blank or low-information")
+    if reasons:
+        raise CameraFrameIntegrityError(
+            f"invalid RoboCasa RGB frame from {camera_name}: {', '.join(reasons)}; "
+            f"metrics={metrics}"
+        )
+    return metrics
+
+
 class WebsocketPolicyClient:
     def __init__(self, host: str, port: int):
         if _websocket_client_policy is None:
@@ -170,6 +233,8 @@ class FastWAMPolicyClient:
         return self.normalizer.normalizers["action"]["default"].backward(action_t).cpu().numpy()
 
     def _image_tensor(self, left_image: np.ndarray, wrist_image: np.ndarray):
+        validate_camera_frame(left_image, "agentview_left")
+        validate_camera_frame(wrist_image, "eye_in_hand")
         merged = np.concatenate([convert_to_uint8(left_image), convert_to_uint8(wrist_image)], axis=1)
         x = self.torch.from_numpy(np.asarray(merged, dtype=np.float32))
         x = x.to(device=self.device, dtype=self.model_dtype)
@@ -258,21 +323,42 @@ class MegatronFastWAMPolicyClient:
         os.environ.setdefault("WORLD_SIZE", "1")
         self.torch = torch
         self._closed = False
+        training_config = FastWAMConfig.from_megatron_checkpoint(checkpoint)
+        mismatches = []
+        if training_config.action.action_dim != int(action_dim):
+            mismatches.append(
+                f"action_dim checkpoint={training_config.action.action_dim} cli={int(action_dim)}"
+            )
+        if training_config.proprio_dim != int(proprio_dim):
+            mismatches.append(
+                f"proprio_dim checkpoint={training_config.proprio_dim} cli={int(proprio_dim)}"
+            )
+        if mismatches:
+            raise ValueError(
+                "Megatron eval contract does not match checkpoint: " + "; ".join(mismatches)
+            )
         initialize(1)
         atexit.register(self.close)
 
         dtype = torch.bfloat16 if mixed_precision == "bf16" else torch.float32
-        base = FastWAMConfig()
         self.config = replace(
-            base,
-            action=replace(base.action, action_dim=int(action_dim)),
-            proprio_dim=int(proprio_dim),
+            training_config,
             action_horizon=int(action_horizon),
             num_video_frames=int(num_video_frames),
             num_inference_steps=int(num_inference_steps),
             inference_seed=int(seed),
-            joint_action_video_attention=True,
         )
+        self.runtime_contract = {
+            "checkpoint_training_attention_backend": self.config.training_attention_backend,
+            "checkpoint_training_kernel_mode": self.config.training_kernel_mode,
+            "checkpoint_joint_action_video_attention": self.config.joint_action_video_attention,
+            "checkpoint_action_dim": self.config.action.action_dim,
+            "checkpoint_proprio_dim": self.config.proprio_dim,
+            "eval_action_horizon": self.config.action_horizon,
+            "eval_num_video_frames": self.config.num_video_frames,
+            "eval_num_inference_steps": self.config.num_inference_steps,
+            "eval_seed": self.config.inference_seed,
+        }
         self.model = FastWAMModel(
             self.config,
             transformer_config(self.config, 1, dtype),
@@ -346,6 +432,8 @@ class MegatronFastWAMPolicyClient:
         return self.normalizer.normalizers["action"]["default"].backward(value).cpu().numpy()
 
     def _encode_image(self, left_image: np.ndarray, wrist_image: np.ndarray):
+        validate_camera_frame(left_image, "agentview_left")
+        validate_camera_frame(wrist_image, "eye_in_hand")
         merged = np.concatenate(
             [convert_to_uint8(left_image), convert_to_uint8(wrist_image)],
             axis=1,
@@ -366,15 +454,25 @@ class MegatronFastWAMPolicyClient:
         proprio = self._normalize_state(
             np.asarray(element["observation/state"], dtype=np.float32)
         )
-        actions = self.model.infer_action_encoded(
-            latent,
-            context,
-            context_mask,
-            proprio,
-            seed=self.seed,
-            num_inference_steps=self.config.num_inference_steps,
-            num_video_frames=self.config.num_video_frames,
-        )
+        if self.config.joint_action_video_attention:
+            actions = self.model.infer_action_encoded(
+                latent,
+                context,
+                context_mask,
+                proprio,
+                seed=self.seed,
+                num_inference_steps=self.config.num_inference_steps,
+                num_video_frames=self.config.num_video_frames,
+            )
+        else:
+            actions = self.model.infer_action_only_encoded(
+                latent,
+                context,
+                context_mask,
+                proprio,
+                seed=self.seed,
+                num_inference_steps=self.config.num_inference_steps,
+            )
         actions = self._denormalize_action(actions)
         expected = (self.action_horizon, self.action_dim)
         if actions.shape != expected:
