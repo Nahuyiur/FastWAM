@@ -31,7 +31,7 @@ def summarize(
     errors: list[dict] = []
     videos: list[Path] = []
     protocol_errors: list[str] = []
-    for shard in sorted(root.glob("shard_*")):
+    for shard in sorted(path for path in root.glob("shard_*") if path.is_dir()):
         rows.extend(read_jsonl(shard / "episode_results.jsonl"))
         errors.extend(read_jsonl(shard / "errors.jsonl"))
         videos.extend(path for path in (shard / "videos").rglob("*.mp4") if path.stat().st_size > 0)

@@ -134,6 +134,7 @@ def _write_periodic_shard(
 def test_periodic_summary_requires_baseline_protocol_contract(tmp_path):
     for index in range(4):
         _write_periodic_shard(tmp_path, index)
+    (tmp_path / "shard_03_retry.pid").write_text("12345\n")
     summary, rows, videos = periodic_summary.summarize(
         tmp_path,
         4,
