@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="${ROOT:-/mnt/yuhan/FastWAM_megatron_robocasa_webdataset}"
 TRAIN_RUN="${TRAIN_RUN:-${ROOT}/outputs/robocasa_megatron_offline50k_4gpu_20260803}"
-OUT_ROOT="${OUT_ROOT:-${ROOT}/outputs/robocasa_megatron_offline50k_4gpu_20260803_periodic_eval16_baseline_v1}"
+OUT_ROOT="${OUT_ROOT:-${ROOT}/outputs/robocasa_megatron_offline50k_4gpu_20260803_periodic_eval16_formal_baseline_v1}"
 PLAN="${PLAN:-${ROOT}/fast_wam/configs/robocasa_periodic_eval_16.json}"
 PYTHON="${PYTHON:-/mnt/yuhan/envs/motus-rebuilt-v2_10/bin/python}"
 VAE="${VAE:-/mnt/yuhan/FastWAM/checkpoints/Wan-AI/Wan2.2-TI2V-5B/Wan2.2_VAE.pth}"
@@ -15,12 +15,13 @@ ALLOW_SHARED_GPUS="${ALLOW_SHARED_GPUS:-0}"
 MIN_STEP="${MIN_STEP:-5000}"
 MAX_STEP="${MAX_STEP:-50000}"
 EXPECTED_EPISODES=16
-WANDB_RUN_ID="${WANDB_RUN_ID:-robocasa_megatron_offline50k_4gpu_20260803_periodic_eval_baseline_v1}"
+WANDB_RUN_ID="${WANDB_RUN_ID:-robocasa_megatron_offline50k_4gpu_20260803_periodic_eval_formal_baseline_v1}"
 RENDER_BACKEND="${RENDER_BACKEND:-egl}"
 OSMESA_ROOT="${OSMESA_ROOT:-${ROOT}/.runtime/osmesa/root}"
-FASTWAM_REPLAN_STEPS="${FASTWAM_REPLAN_STEPS:-5}"
-FASTWAM_INFER_STEPS="${FASTWAM_INFER_STEPS:-10}"
-PROTOCOL_TAG="${PROTOCOL_TAG:-fastwam_baseline_v1}"
+# Match the original RoboCasa FastWAM formal 750-episode protocol.
+FASTWAM_REPLAN_STEPS="${FASTWAM_REPLAN_STEPS:-32}"
+FASTWAM_INFER_STEPS="${FASTWAM_INFER_STEPS:-20}"
+PROTOCOL_TAG="${PROTOCOL_TAG:-fastwam_formal_baseline_v1}"
 EXPECTED_ATTENTION_BACKEND="${EXPECTED_ATTENTION_BACKEND:-structured_sdpa}"
 EXPECTED_KERNEL_MODE="${EXPECTED_KERNEL_MODE:-optimized}"
 NVIDIA_EGL_VENDOR_JSON="${NVIDIA_EGL_VENDOR_JSON:-${ROOT}/fast_wam/runtime/10_nvidia.json}"
@@ -33,7 +34,7 @@ echo "[watcher] started $(date -Is) host=$(hostname) render_backend=${RENDER_BAC
 
 export MUJOCO_GL="${RENDER_BACKEND}"
 export PYOPENGL_PLATFORM="${RENDER_BACKEND}"
-if [[ "${PROTOCOL_TAG}" == "fastwam_baseline_v1" && "${RENDER_BACKEND}" != "egl" ]]; then
+if [[ "${PROTOCOL_TAG}" == "fastwam_formal_baseline_v1" && "${RENDER_BACKEND}" != "egl" ]]; then
   echo "[watcher] ${PROTOCOL_TAG} requires the baseline EGL renderer; got ${RENDER_BACKEND}" >&2
   exit 2
 fi

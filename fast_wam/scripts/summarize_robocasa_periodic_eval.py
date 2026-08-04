@@ -55,6 +55,10 @@ def summarize(
                 f"{shard.name}: render_backend={config.get('render_backend')} "
                 f"expected={expected_render_backend}"
             )
+        if bool(config.get("no_camera_integrity_check", False)):
+            protocol_errors.append(
+                f"{shard.name}: camera integrity validation was disabled"
+            )
         runtime = config.get("policy_runtime_contract") or {}
         if runtime.get("eval_num_inference_steps") != expected_inference_steps:
             protocol_errors.append(
@@ -148,9 +152,9 @@ def main() -> int:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--checkpoint-step", required=True, type=int)
     parser.add_argument("--expected-episodes", type=int, default=16)
-    parser.add_argument("--expected-replan-steps", type=int, default=5)
-    parser.add_argument("--expected-inference-steps", type=int, default=10)
-    parser.add_argument("--protocol-tag", default="fastwam_baseline_v1")
+    parser.add_argument("--expected-replan-steps", type=int, default=32)
+    parser.add_argument("--expected-inference-steps", type=int, default=20)
+    parser.add_argument("--protocol-tag", default="fastwam_formal_baseline_v1")
     parser.add_argument("--expected-attention-backend", default="structured_sdpa")
     parser.add_argument("--expected-kernel-mode", default="optimized")
     parser.add_argument("--expected-render-backend", default="egl")

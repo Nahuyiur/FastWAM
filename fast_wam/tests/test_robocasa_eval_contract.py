@@ -85,7 +85,14 @@ def test_camera_integrity_accepts_smooth_scene_and_rejects_known_corruption_shap
         policy_backends.validate_camera_frame(blank, "blank")
 
 
-def _write_periodic_shard(root: Path, index: int, *, replan_steps: int = 5) -> None:
+def _write_periodic_shard(
+    root: Path,
+    index: int,
+    *,
+    replan_steps: int = 32,
+    inference_steps: int = 20,
+    disable_camera_check: bool = False,
+) -> None:
     shard = root / f"shard_{index:02d}"
     video = shard / "videos" / "bucket" / "task" / f"{index}.mp4"
     video.parent.mkdir(parents=True, exist_ok=True)
@@ -98,10 +105,11 @@ def _write_periodic_shard(root: Path, index: int, *, replan_steps: int = 5) -> N
         json.dumps(
             {
                 "replan_steps": replan_steps,
-                "fastwam_num_inference_steps": 10,
+                "fastwam_num_inference_steps": inference_steps,
                 "render_backend": "egl",
+                "no_camera_integrity_check": disable_camera_check,
                 "policy_runtime_contract": {
-                    "eval_num_inference_steps": 10,
+                    "eval_num_inference_steps": inference_steps,
                     "checkpoint_joint_action_video_attention": True,
                     "checkpoint_training_attention_backend": "structured_sdpa",
                     "checkpoint_training_kernel_mode": "optimized",
@@ -117,9 +125,9 @@ def test_periodic_summary_requires_baseline_protocol_contract(tmp_path):
     summary, rows, videos = periodic_summary.summarize(
         tmp_path,
         4,
-        expected_replan_steps=5,
-        expected_inference_steps=10,
-        protocol_tag="fastwam_baseline_v1",
+        expected_replan_steps=32,
+        expected_inference_steps=20,
+        protocol_tag="fastwam_formal_baseline_v1",
         expected_attention_backend="structured_sdpa",
         expected_kernel_mode="optimized",
         expected_render_backend="egl",
@@ -127,26 +135,37 @@ def test_periodic_summary_requires_baseline_protocol_contract(tmp_path):
     assert len(rows) == len(videos) == 4
     assert summary["protocol_errors"] == []
 
-    _write_periodic_shard(tmp_path, 3, replan_steps=32)
+    _write_periodic_shard(tmp_path, 3, replan_steps=5)
     summary, _, _ = periodic_summary.summarize(
         tmp_path,
         4,
-        expected_replan_steps=5,
-        expected_inference_steps=10,
-        protocol_tag="fastwam_baseline_v1",
+        expected_replan_steps=32,
+        expected_inference_steps=20,
+        protocol_tag="fastwam_formal_baseline_v1",
         expected_attention_backend="structured_sdpa",
         expected_kernel_mode="optimized",
         expected_render_backend="egl",
     )
-    assert any("replan_steps=32" in error for error in summary["protocol_errors"])
+    assert any("replan_steps=5" in error for error in summary["protocol_errors"])
+
+    _write_periodic_shard(tmp_path, 3, disable_camera_check=True)
+    summary, _, _ = periodic_summary.summarize(
+        tmp_path,
+        4,
+        expected_replan_steps=32,
+        expected_inference_steps=20,
+        protocol_tag="fastwam_formal_baseline_v1",
+        expected_attention_backend="structured_sdpa",
+        expected_kernel_mode="optimized",
+        expected_render_backend="egl",
+    )
+    assert any("camera integrity validation was disabled" in error for error in summary["protocol_errors"])
 
 
 def test_periodic_watcher_defaults_match_fastwam_baseline_protocol():
     script = (ROOT / "fast_wam" / "scripts" / "watch_robocasa_megatron_periodic_eval.sh").read_text()
-    assert 'FASTWAM_REPLAN_STEPS="${FASTWAM_REPLAN_STEPS:-5}"' in script
-    assert 'FASTWAM_INFER_STEPS="${FASTWAM_INFER_STEPS:-10}"' in script
-    assert "--replan-steps 32" not in script
-    assert "--fastwam-num-inference-steps 20" not in script
+    assert 'FASTWAM_REPLAN_STEPS="${FASTWAM_REPLAN_STEPS:-32}"' in script
+    assert 'FASTWAM_INFER_STEPS="${FASTWAM_INFER_STEPS:-20}"' in script
     assert "__EGL_VENDOR_LIBRARY_FILENAMES" in script
     assert "NVIDIA_EGL_ROOT" in script
     vendor = json.loads((ROOT / "fast_wam" / "runtime" / "10_nvidia.json").read_text())
