@@ -21,6 +21,17 @@ BASELINE_COMMIT="${BASELINE_COMMIT:-f86adf7b5b4d352ef615690493286a2b57288059}"
 VAE_CHECKPOINT="${VAE_CHECKPOINT:-/mnt/yuhan/FastWAM/checkpoints/Wan-AI/Wan2.2-TI2V-5B/Wan2.2_VAE.pth}"
 ACTION_CHECKPOINT="${ACTION_CHECKPOINT:-/mnt/yuhan/FastWAM/checkpoints/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt}"
 PARITY_GATE_DIR="${PARITY_GATE_DIR:-}"
+ATTENTION_BACKEND="${ATTENTION_BACKEND:-sdpa}"
+KERNEL_MODE="${KERNEL_MODE:-reference}"
+
+case "$ATTENTION_BACKEND" in
+  sdpa|structured_sdpa) ;;
+  *) echo "Unsupported attention backend: $ATTENTION_BACKEND" >&2; exit 1 ;;
+esac
+if [ "$KERNEL_MODE" != "reference" ]; then
+  echo "Only the baseline-reference kernel mode is accepted for the formal run" >&2
+  exit 1
+fi
 
 mkdir -p "$RUN_ROOT" "$CACHE_ROOT"
 exec 9>"$RUN_ROOT/pipeline.lock"
@@ -122,12 +133,12 @@ mkdir -p "$PARITY_GATE_DIR"
   --micro-batch-size 1 \
   --global-batch-size 32 \
   --train-iters 50000 \
-  --attention-backend structured_sdpa \
-  --kernel-mode reference \
+  --attention-backend "$ATTENTION_BACKEND" \
+  --kernel-mode "$KERNEL_MODE" \
   --optimizer-weight-decay-policy all_trainable \
   --output "$PARITY_GATE_DIR/training_contract.json"
 
-"$PYTHON_BIN" - "$PARITY_GATE_DIR" "$INITIAL_DCP" "$CACHE_ROOT" <<'PY'
+"$PYTHON_BIN" - "$PARITY_GATE_DIR" "$INITIAL_DCP" "$CACHE_ROOT" "$ATTENTION_BACKEND" "$KERNEL_MODE" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -135,6 +146,8 @@ from pathlib import Path
 root = Path(sys.argv[1])
 initial_dcp = str(Path(sys.argv[2]).resolve())
 latent_cache = str(Path(sys.argv[3]).resolve())
+attention_backend = sys.argv[4]
+kernel_mode = sys.argv[5]
 required = (
     "training_contract.json",
     "action_initialization_parity.json",
@@ -152,6 +165,14 @@ for name in required:
     if payload.get("status") != "PASS":
         raise SystemExit(f"Parity certificate is not PASS: {path}")
 
+contract = json.loads((root / "training_contract.json").read_text())
+accelerated = contract.get("accelerated") or {}
+if accelerated.get("attention_backend") != attention_backend:
+    raise SystemExit("Training contract certificate has the wrong attention backend")
+if accelerated.get("kernel_mode") != kernel_mode:
+    raise SystemExit("Training contract certificate has the wrong kernel mode")
+if accelerated.get("optimizer_weight_decay_policy") != "all_trainable":
+    raise SystemExit("Training contract certificate has the wrong optimizer policy")
 dcp = json.loads((root / "dcp_initialization_parity.json").read_text())
 if dcp.get("initial_dcp") != initial_dcp:
     raise SystemExit("DCP parity certificate belongs to a different initialization")
@@ -162,15 +183,15 @@ full = json.loads((root / "full_model_parity.json").read_text())
 if full.get("initial_dcp") != initial_dcp:
     raise SystemExit("Full-model parity certificate belongs to a different initialization")
 candidate = full.get("candidate") or {}
-if candidate.get("backend") != "structured_sdpa" or candidate.get("kernel") != "reference":
+if candidate.get("backend") != attention_backend or candidate.get("kernel") != kernel_mode:
     raise SystemExit("Full-model parity certificate has the wrong training backend/kernel")
 smoke = json.loads((root / "training_smoke.json").read_text())
 if smoke.get("initial_dcp") != initial_dcp or smoke.get("latent_cache") != latent_cache:
     raise SystemExit("Training smoke certificate belongs to different launch assets")
 smoke_candidate = smoke.get("candidate") or {}
 if smoke_candidate != {
-    "attention_backend": "structured_sdpa",
-    "kernel_mode": "reference",
+    "attention_backend": attention_backend,
+    "kernel_mode": kernel_mode,
     "optimizer": "AdamW",
     "weight_decay_policy": "all_trainable",
 }:
@@ -243,8 +264,8 @@ MIN_LR=5e-7 \
 LR_WARMUP_INIT=2e-8 \
 LR_WARMUP_FRACTION=0.05 \
 WEIGHT_DECAY=0.01 \
-ATTENTION_BACKEND=structured_sdpa \
-KERNEL_MODE=reference \
+ATTENTION_BACKEND="$ATTENTION_BACKEND" \
+KERNEL_MODE="$KERNEL_MODE" \
 SAVE_INTERVAL=5000 \
 SAVE_CHECKPOINTS=1 \
 EVAL_INTERVAL=0 \

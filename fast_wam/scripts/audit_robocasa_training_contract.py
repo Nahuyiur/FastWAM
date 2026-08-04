@@ -108,8 +108,12 @@ def main() -> None:
     parser.add_argument("--micro-batch-size", type=int, default=1)
     parser.add_argument("--global-batch-size", type=int, default=32)
     parser.add_argument("--train-iters", type=int, default=50000)
-    parser.add_argument("--attention-backend", default="structured_sdpa")
-    parser.add_argument("--kernel-mode", default="reference")
+    parser.add_argument(
+        "--attention-backend",
+        choices=("sdpa", "structured_sdpa"),
+        required=True,
+    )
+    parser.add_argument("--kernel-mode", choices=("reference",), default="reference")
     parser.add_argument("--optimizer-weight-decay-policy", default="all_trainable")
     args = parser.parse_args()
 
@@ -172,7 +176,10 @@ def main() -> None:
         abs(5.0e-7 - float(task["learning_rate"]) * 0.01) <= 1.0e-15,
     )
     audit.equal("precision", task["mixed_precision"], "bf16")
-    audit.equal("training.attention_backend", args.attention_backend, "structured_sdpa")
+    audit.true(
+        "training.attention_backend_supported",
+        args.attention_backend in {"sdpa", "structured_sdpa"},
+    )
     audit.equal("training.kernel_mode", args.kernel_mode, "reference")
 
     audit.equal("data.camera_keys", data["camera_keys"], ["robot0_agentview_left", "robot0_eye_in_hand"])
@@ -242,10 +249,13 @@ def main() -> None:
             "data_parallel_size": dp_size,
             "micro_batch_size": args.micro_batch_size,
             "global_batch_size": args.global_batch_size,
+            "attention_backend": args.attention_backend,
+            "kernel_mode": args.kernel_mode,
+            "optimizer_weight_decay_policy": args.optimizer_weight_decay_policy,
             "allowed_differences": [
                 "Megatron TP1+DP4 instead of Accelerate/DeepSpeed DP8",
                 "ordinary BF16 mmap VAE cache instead of online VAE",
-                "structured SDPA with the reference Fast-WAM kernels",
+                f"{args.attention_backend} attention with the reference Fast-WAM kernels",
             ],
         },
         "checks": audit.checks,

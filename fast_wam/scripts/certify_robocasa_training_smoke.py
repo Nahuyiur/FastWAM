@@ -35,6 +35,16 @@ def main() -> None:
     parser.add_argument("--min-iteration", type=int, default=40)
     parser.add_argument("--warmup-iterations", type=int, default=20)
     parser.add_argument("--baseline-step-seconds", type=float, default=4.476276)
+    parser.add_argument(
+        "--expected-attention-backend",
+        choices=("sdpa", "structured_sdpa"),
+        required=True,
+    )
+    parser.add_argument(
+        "--expected-kernel-mode",
+        choices=("reference",),
+        default="reference",
+    )
     args = parser.parse_args()
 
     root = args.run_root.resolve()
@@ -85,7 +95,11 @@ def main() -> None:
         "no_fatal": fatal_pattern.search(text) is None,
         "cached_input": "input=ordinary latents=cached" in text,
         "initial_dcp": str(args.initial_dcp.resolve()) in text,
-        "attention_kernel": "attention=structured_sdpa, kernels=reference" in text,
+        "attention_kernel": (
+            f"attention={args.expected_attention_backend}, "
+            f"kernels={args.expected_kernel_mode}"
+        )
+        in text,
         "optimizer_contract": (
             "optimizer contract: AdamW weight_decay applies to every trainable parameter"
             in text
@@ -103,8 +117,8 @@ def main() -> None:
         "initial_dcp": str(args.initial_dcp.resolve()),
         "latent_cache": str(args.latent_cache.resolve()),
         "candidate": {
-            "attention_backend": "structured_sdpa",
-            "kernel_mode": "reference",
+            "attention_backend": args.expected_attention_backend,
+            "kernel_mode": args.expected_kernel_mode,
             "optimizer": "AdamW",
             "weight_decay_policy": "all_trainable",
         },

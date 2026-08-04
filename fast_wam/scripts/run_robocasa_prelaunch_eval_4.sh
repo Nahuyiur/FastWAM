@@ -13,6 +13,17 @@ ROBOCASA_REPO="${ROBOCASA_REPO:-/mnt/yuhan/repos/robocasa}"
 NVIDIA_DRIVER_VERSION="${NVIDIA_DRIVER_VERSION:-$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1 | tr -d ' ')}"
 NVIDIA_EGL_ROOT="${NVIDIA_EGL_ROOT:-$ROOT/.runtime/nvidia-egl-${NVIDIA_DRIVER_VERSION}/root/usr/lib/x86_64-linux-gnu}"
 NVIDIA_EGL_VENDOR_JSON="${NVIDIA_EGL_VENDOR_JSON:-$ROOT/fast_wam/runtime/10_nvidia.json}"
+EXPECTED_ATTENTION_BACKEND="${EXPECTED_ATTENTION_BACKEND:-sdpa}"
+EXPECTED_KERNEL_MODE="${EXPECTED_KERNEL_MODE:-reference}"
+
+case "$EXPECTED_ATTENTION_BACKEND" in
+  sdpa|structured_sdpa) ;;
+  *) echo "Unsupported attention backend: $EXPECTED_ATTENTION_BACKEND" >&2; exit 2 ;;
+esac
+[[ "$EXPECTED_KERNEL_MODE" == "reference" ]] || {
+  echo "Only the baseline-reference kernel mode is accepted" >&2
+  exit 2
+}
 
 [[ -s "$CHECKPOINT/common.pt" && -s "$CHECKPOINT/.metadata" ]] || {
   echo "Incomplete smoke checkpoint: $CHECKPOINT" >&2
@@ -87,8 +98,8 @@ fi
   --expected-replan-steps 32 \
   --expected-inference-steps 20 \
   --protocol-tag fastwam_formal_baseline_v1 \
-  --expected-attention-backend structured_sdpa \
-  --expected-kernel-mode reference \
+  --expected-attention-backend "$EXPECTED_ATTENTION_BACKEND" \
+  --expected-kernel-mode "$EXPECTED_KERNEL_MODE" \
   --expected-render-backend egl \
   >"$OUT_ROOT/summary.log" 2>&1
 date -Is >"$OUT_ROOT/DONE"
