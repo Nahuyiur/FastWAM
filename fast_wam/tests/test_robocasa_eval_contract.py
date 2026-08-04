@@ -107,7 +107,7 @@ def _write_periodic_shard(
                 "replan_steps": replan_steps,
                 "fastwam_num_inference_steps": inference_steps,
                 "render_backend": "egl",
-                "no_camera_integrity_check": disable_camera_check,
+                "validate_camera_integrity": not disable_camera_check,
                 "policy_runtime_contract": {
                     "eval_num_inference_steps": inference_steps,
                     "checkpoint_joint_action_video_attention": True,

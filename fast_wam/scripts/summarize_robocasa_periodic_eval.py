@@ -55,7 +55,7 @@ def summarize(
                 f"{shard.name}: render_backend={config.get('render_backend')} "
                 f"expected={expected_render_backend}"
             )
-        if bool(config.get("no_camera_integrity_check", False)):
+        if config.get("validate_camera_integrity") is not True:
             protocol_errors.append(
                 f"{shard.name}: camera integrity validation was disabled"
             )
