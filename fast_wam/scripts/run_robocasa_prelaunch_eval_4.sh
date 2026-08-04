@@ -15,6 +15,20 @@ NVIDIA_EGL_ROOT="${NVIDIA_EGL_ROOT:-$ROOT/.runtime/nvidia-egl-${NVIDIA_DRIVER_VE
 NVIDIA_EGL_VENDOR_JSON="${NVIDIA_EGL_VENDOR_JSON:-$ROOT/fast_wam/runtime/10_nvidia.json}"
 EXPECTED_ATTENTION_BACKEND="${EXPECTED_ATTENTION_BACKEND:-sdpa}"
 EXPECTED_KERNEL_MODE="${EXPECTED_KERNEL_MODE:-reference}"
+CHECKPOINT_STEP="${CHECKPOINT_STEP:-}"
+
+if [[ -z "$CHECKPOINT_STEP" ]]; then
+  checkpoint_name="$(basename "$CHECKPOINT")"
+  [[ "$checkpoint_name" =~ ^iter_([0-9]+)$ ]] || {
+    echo "Cannot infer checkpoint step from: $CHECKPOINT" >&2
+    exit 2
+  }
+  CHECKPOINT_STEP="$((10#${BASH_REMATCH[1]}))"
+fi
+[[ "$CHECKPOINT_STEP" =~ ^[0-9]+$ ]] || {
+  echo "Invalid CHECKPOINT_STEP: $CHECKPOINT_STEP" >&2
+  exit 2
+}
 
 case "$EXPECTED_ATTENTION_BACKEND" in
   sdpa|structured_sdpa) ;;
@@ -93,7 +107,7 @@ fi
 
 "$PYTHON" "$ROOT/fast_wam/scripts/summarize_robocasa_periodic_eval.py" \
   --root "$OUT_ROOT" \
-  --checkpoint-step 40 \
+  --checkpoint-step "$CHECKPOINT_STEP" \
   --expected-episodes 4 \
   --expected-replan-steps 32 \
   --expected-inference-steps 20 \

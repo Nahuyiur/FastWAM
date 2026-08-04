@@ -31,6 +31,22 @@ periodic_summary = _load_module(
     "robocasa_periodic_summary_test",
     ROOT / "fast_wam" / "scripts" / "summarize_robocasa_periodic_eval.py",
 )
+training_smoke_cert = _load_module(
+    "robocasa_training_smoke_cert_test",
+    ROOT / "fast_wam" / "scripts" / "certify_robocasa_training_smoke.py",
+)
+
+
+def test_training_smoke_fatal_pattern_ignores_nccl_env_deprecation():
+    warning = (
+        "Warning: Environment variable NCCL_ASYNC_ERROR_HANDLING is deprecated; "
+        "use TORCH_NCCL_ASYNC_ERROR_HANDLING instead"
+    )
+    assert training_smoke_cert.FATAL_PATTERN.search(warning) is None
+    assert training_smoke_cert.FATAL_PATTERN.search("NCCL WARN connection closed")
+    assert training_smoke_cert.FATAL_PATTERN.search(
+        "ProcessGroupNCCL watchdog observed an error"
+    )
 
 
 def test_megatron_checkpoint_restores_training_model_contract(tmp_path):

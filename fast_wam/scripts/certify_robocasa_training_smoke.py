@@ -14,6 +14,14 @@ ITERATION_RE = re.compile(
     r"iteration\s+(?P<iteration>\d+)/\s*(?P<maximum>\d+)\s*\|(?P<body>.*)"
 )
 
+FATAL_PATTERN = re.compile(
+    r"Traceback \(most recent call last\)|CUDA out of memory|FloatingPointError|"
+    r"WORKER_FAILED|NCCL (?:WARN|ERROR)|"
+    r"nccl(?:Unhandled|System|Internal|Invalid|Remote)[A-Za-z]*Error|"
+    r"ProcessGroupNCCL.*(?:error|abort|watchdog)",
+    re.IGNORECASE,
+)
+
 
 def _field(body: str, name: str) -> float | None:
     match = re.search(rf"(?:^|\|)\s*{re.escape(name)}:\s*([^|]+)", body)
@@ -77,11 +85,6 @@ def main() -> None:
     ordered = sorted(steady)
     p90 = ordered[min(len(ordered) - 1, int(0.9 * len(ordered)))] if ordered else None
     mean = statistics.fmean(steady) if steady else None
-    fatal_pattern = re.compile(
-        r"Traceback \(most recent call last\)|CUDA out of memory|FloatingPointError|"
-        r"WORKER_FAILED|NCCL.*(?:error|abort)",
-        re.IGNORECASE,
-    )
     checkpoint = args.checkpoint.resolve()
     distcp_files = list(checkpoint.glob("__*_0.distcp"))
     checks = {
@@ -92,7 +95,7 @@ def main() -> None:
         and all(row["loss"] is not None and row["loss"] == row["loss"] for row in rows),
         "no_skipped": bool(rows) and all(row["skipped"] == 0 for row in rows),
         "no_nan": bool(rows) and all(row["nan"] == 0 for row in rows),
-        "no_fatal": fatal_pattern.search(text) is None,
+        "no_fatal": FATAL_PATTERN.search(text) is None,
         "cached_input": "input=ordinary latents=cached" in text,
         "initial_dcp": str(args.initial_dcp.resolve()) in text,
         "attention_kernel": (
