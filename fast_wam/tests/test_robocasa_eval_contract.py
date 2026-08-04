@@ -70,6 +70,18 @@ def test_camera_integrity_accepts_smooth_scene_and_rejects_known_corruption_shap
     ).clip(0, 255).astype(np.uint8)
     policy_backends.validate_camera_frame(smooth, "smooth")
 
+    detailed = np.stack(
+        [
+            128 + 35 * np.sin(2 * np.pi * x / 8 + phase)
+            + 21 * np.sin(2 * np.pi * y / 11 + phase)
+            for phase in (0.0, 1.1, 2.2)
+        ],
+        axis=-1,
+    ).clip(0, 255).astype(np.uint8)
+    metrics = policy_backends.camera_frame_integrity_metrics(detailed)
+    assert metrics["edge_to_std_ratio"] > 0.35
+    policy_backends.validate_camera_frame(detailed, "normal_high_detail")
+
     rng = np.random.default_rng(7)
     noise = rng.integers(0, 256, size=(224, 224, 3), dtype=np.uint8)
     with pytest.raises(policy_backends.CameraFrameIntegrityError):

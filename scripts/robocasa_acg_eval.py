@@ -31,6 +31,7 @@ import numpy as np
 import tqdm
 
 from robocasa_acg_policy_backends import (
+    CameraFrameIntegrityError,
     FastWAMPolicyClient,
     MegatronFastWAMPolicyClient,
     WebsocketPolicyClient,
@@ -580,9 +581,24 @@ def run_episode(
             raw_wrist = obs["video.robot0_eye_in_hand"]
             raw_right = obs["video.robot0_agentview_right"]
             if validate_camera_integrity:
-                validate_camera_frame(raw_left, "agentview_left")
-                validate_camera_frame(raw_wrist, "eye_in_hand")
-                validate_camera_frame(raw_right, "agentview_right")
+                camera_bundle = {
+                    "agentview_left": raw_left,
+                    "eye_in_hand": raw_wrist,
+                    "agentview_right": raw_right,
+                }
+                try:
+                    for camera_name, camera_frame in camera_bundle.items():
+                        validate_camera_frame(camera_frame, camera_name)
+                except CameraFrameIntegrityError:
+                    if video_path is not None:
+                        failure_dir = video_path.parent / "integrity_failures"
+                        failure_dir.mkdir(parents=True, exist_ok=True)
+                        for camera_name, camera_frame in camera_bundle.items():
+                            artifact = failure_dir / (
+                                f"{video_path.stem}_step_{t:04d}_{camera_name}.png"
+                            )
+                            imageio.imwrite(artifact, convert_to_uint8(camera_frame))
+                    raise
             img = preprocess_image(raw_left, resize_size)
             wrist_img = preprocess_image(raw_wrist, resize_size)
             img_right = preprocess_image(raw_right, resize_size)
@@ -626,7 +642,17 @@ def run_episode(
             t_video = time.perf_counter()
             raw_frame = np.ascontiguousarray(env.render())
             if validate_camera_integrity:
-                validate_camera_frame(raw_frame, "env.render")
+                try:
+                    validate_camera_frame(raw_frame, "env.render")
+                except CameraFrameIntegrityError:
+                    if video_path is not None:
+                        failure_dir = video_path.parent / "integrity_failures"
+                        failure_dir.mkdir(parents=True, exist_ok=True)
+                        artifact = failure_dir / (
+                            f"{video_path.stem}_step_{t:04d}_env_render.png"
+                        )
+                        imageio.imwrite(artifact, convert_to_uint8(raw_frame))
+                    raise
             frame = convert_to_uint8(raw_frame)
             replay_images.append(frame)
             video_write_s += time.perf_counter() - t_video

@@ -104,7 +104,10 @@ def validate_camera_frame(image: np.ndarray, camera_name: str) -> dict[str, floa
     reasons: list[str] = []
     if float(metrics["mean_neighbor_delta"]) > 24.0:
         reasons.append("excessive adjacent-pixel variation")
-    if float(metrics["edge_to_std_ratio"]) > 0.35:
+    if (
+        float(metrics["edge_to_std_ratio"]) > 0.55
+        and float(metrics["mean_neighbor_delta"]) > 16.0
+    ):
         reasons.append("edge energy is implausibly high relative to image variance")
     if (
         float(metrics["coarse_rgb_entropy"]) < 1.25
