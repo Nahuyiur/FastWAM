@@ -188,6 +188,7 @@ fi
 date -Iseconds >"$RUN_ROOT/TRAIN_STARTED"
 SIDECAR_ROOT="$RUN_ROOT/wandb_sidecar"
 mkdir -p "$SIDECAR_ROOT"
+rm -f "$SIDECAR_ROOT/STOP"
 "$PYTHON_BIN" fast_wam/scripts/sync_megatron_train_log_to_wandb.py \
   --log-path "$RUN_ROOT/train.log" \
   --state-path "$SIDECAR_ROOT/state.json" \
@@ -197,6 +198,7 @@ mkdir -p "$SIDECAR_ROOT"
   --run-name "$RUN_NAME" \
   --wandb-dir "$SIDECAR_ROOT/wandb" \
   --poll-seconds "$WANDB_SIDECAR_POLL_SECONDS" \
+  --stop-file "$SIDECAR_ROOT/STOP" \
   --follow \
   >"$SIDECAR_ROOT/sidecar.log" 2>&1 &
 SIDECAR_PID=$!
@@ -208,6 +210,15 @@ if ! kill -0 "$SIDECAR_PID" 2>/dev/null; then
 fi
 
 stop_sidecar() {
+  if kill -0 "$SIDECAR_PID" 2>/dev/null; then
+    touch "$SIDECAR_ROOT/STOP"
+    for _ in $(seq 1 40); do
+      if ! kill -0 "$SIDECAR_PID" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+  fi
   if kill -0 "$SIDECAR_PID" 2>/dev/null; then
     kill "$SIDECAR_PID" 2>/dev/null || true
     wait "$SIDECAR_PID" 2>/dev/null || true

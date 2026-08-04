@@ -35,3 +35,17 @@ def test_parse_iteration_line_extracts_training_metrics():
 
 def test_parse_iteration_line_rejects_unrelated_output():
     assert MODULE.parse_iteration_line("Number of parameters: 3.78\n") is None
+
+
+def test_sidecar_parser_keeps_latest_duplicate_iteration(tmp_path):
+    log = tmp_path / "train.log"
+    log.write_text(
+        " [2026-08-04 00:00:00] iteration 20/ 50000 | loss: 1.0 |\n"
+        " [2026-08-04 00:00:01] iteration 20/ 50000 | loss: 0.5 |\n"
+    )
+
+    rows = MODULE.parse_log(log)
+
+    assert len(rows) == 1
+    assert rows[0][0] == 20
+    assert rows[0][1]["train/loss"] == 0.5

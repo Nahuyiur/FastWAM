@@ -98,6 +98,7 @@ def main() -> int:
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--wandb-dir", required=True, type=Path)
     parser.add_argument("--poll-seconds", type=float, default=30.0)
+    parser.add_argument("--stop-file", type=Path, default=None)
     parser.add_argument("--follow", action="store_true")
     args = parser.parse_args()
 
@@ -130,7 +131,7 @@ def main() -> int:
                     print(f"[wandb-sync] logged through iteration={new_rows[-1][0]}", flush=True)
             else:
                 print(f"[wandb-sync] waiting for {args.log_path}", flush=True)
-            if not args.follow:
+            if not args.follow or (args.stop_file is not None and args.stop_file.exists()):
                 return 0
             time.sleep(args.poll_seconds)
     finally:
