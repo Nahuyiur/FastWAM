@@ -9,6 +9,11 @@ from pathlib import Path
 
 import cv2
 
+from scripts.robocasa_acg_policy_backends import (
+    CameraFrameIntegrityError,
+    validate_camera_frame,
+)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -71,6 +76,7 @@ def main() -> None:
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         decoded = 0
         first_shape = None
+        integrity_error = None
         while True:
             ok, frame = capture.read()
             if not ok:
@@ -78,6 +84,11 @@ def main() -> None:
             decoded += 1
             if first_shape is None:
                 first_shape = list(frame.shape)
+            if integrity_error is None:
+                try:
+                    validate_camera_frame(frame[..., ::-1], f"{video.name}:frame={decoded - 1}")
+                except CameraFrameIntegrityError as error:
+                    integrity_error = str(error)
         capture.release()
         valid = (
             frame_count > 0
@@ -85,6 +96,7 @@ def main() -> None:
             and width == 256
             and height == 256
             and first_shape == [256, 256, 3]
+            and integrity_error is None
         )
         video_probes.append(
             {
@@ -95,6 +107,7 @@ def main() -> None:
                 "declared_frames": frame_count,
                 "decoded_frames": decoded,
                 "first_frame_shape": first_shape,
+                "integrity_error": integrity_error,
             }
         )
     checks["video_streams"] = bool(video_probes) and all(item["valid"] for item in video_probes)
