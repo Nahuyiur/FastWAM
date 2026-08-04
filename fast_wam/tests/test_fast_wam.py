@@ -964,3 +964,19 @@ def test_action_backbone_resize_alpha_contract():
         expected = value.permute(*inverse).contiguous()
     expected *= (4.0 / 2.0) ** 0.5
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+
+
+def test_action_backbone_resize_preserves_upstream_bf16_rounding_order():
+    source = torch.linspace(-0.7, 0.9, 48, dtype=torch.bfloat16).reshape(3, 4, 4)
+    target_shape = (3, 4, 2)
+    resized = torch.nn.functional.interpolate(
+        source.reshape(-1, 1, 4).float(),
+        size=2,
+        mode="linear",
+        align_corners=True,
+    ).reshape(target_shape)
+    expected = (
+        resized.to(torch.bfloat16).float().mul((4.0 / 2.0) ** 0.5).to(torch.bfloat16)
+    )
+    actual = resize_action_backbone_tensor(source, target_shape)
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)

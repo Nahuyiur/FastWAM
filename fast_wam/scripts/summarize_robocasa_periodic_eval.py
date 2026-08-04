@@ -20,12 +20,12 @@ def summarize(
     root: Path,
     expected_episodes: int,
     *,
-    expected_replan_steps: int,
-    expected_inference_steps: int,
-    protocol_tag: str,
-    expected_attention_backend: str,
-    expected_kernel_mode: str,
-    expected_render_backend: str,
+    expected_replan_steps: int = 32,
+    expected_inference_steps: int = 20,
+    protocol_tag: str = "fastwam_formal_baseline_v1",
+    expected_attention_backend: str = "structured_sdpa",
+    expected_kernel_mode: str = "reference",
+    expected_render_backend: str = "egl",
 ) -> tuple[dict, list[dict], list[Path]]:
     rows: list[dict] = []
     errors: list[dict] = []
@@ -156,7 +156,7 @@ def main() -> int:
     parser.add_argument("--expected-inference-steps", type=int, default=20)
     parser.add_argument("--protocol-tag", default="fastwam_formal_baseline_v1")
     parser.add_argument("--expected-attention-backend", default="structured_sdpa")
-    parser.add_argument("--expected-kernel-mode", default="optimized")
+    parser.add_argument("--expected-kernel-mode", default="reference")
     parser.add_argument("--expected-render-backend", default="egl")
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-project", default="robocasa-acg-fastwam")

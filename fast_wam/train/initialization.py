@@ -188,12 +188,18 @@ def resize_action_backbone_tensor(
         raise ValueError(
             f"Resize {tuple(source.shape)} -> {target_shape} produced {tuple(output.shape)}"
         )
+    # Upstream first casts the interpolated tensor back to the source dtype,
+    # then applies alpha in FP32 and casts once more.  The intermediate BF16
+    # rounding is part of the released ActionDiT checkpoint contract.
+    output = output.to(source.dtype)
     if (
         alpha_scaling
         and source.ndim >= 2
         and source.shape[-1] != target_shape[-1]
     ):
-        output.mul_(math.sqrt(float(source.shape[-1]) / float(target_shape[-1])))
+        output = output.float().mul(
+            math.sqrt(float(source.shape[-1]) / float(target_shape[-1]))
+        )
     return output.to(source.dtype)
 
 
@@ -235,6 +241,10 @@ def initialize_from_wan(
             )
             value = source.get(source_name)
             if synthesize and source_shape != full_shape:
+                # Upstream builds a BF16 VideoDiT first and interpolates that
+                # model state.  Interpolating raw FP32 safetensors changes all
+                # resized ActionDiT tensors despite the same nominal formula.
+                value = value.to(dtype=target.dtype)
                 value = resize_action_backbone_tensor(value, full_shape)
                 counts["action_interpolated"] += 1
             elif source_shape != full_shape:

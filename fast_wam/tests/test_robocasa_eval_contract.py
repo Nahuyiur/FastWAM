@@ -179,6 +179,7 @@ def test_periodic_watcher_defaults_match_fastwam_baseline_protocol():
     script = (ROOT / "fast_wam" / "scripts" / "watch_robocasa_megatron_periodic_eval.sh").read_text()
     assert 'FASTWAM_REPLAN_STEPS="${FASTWAM_REPLAN_STEPS:-32}"' in script
     assert 'FASTWAM_INFER_STEPS="${FASTWAM_INFER_STEPS:-20}"' in script
+    assert 'EXPECTED_KERNEL_MODE="${EXPECTED_KERNEL_MODE:-reference}"' in script
     assert "__EGL_VENDOR_LIBRARY_FILENAMES" in script
     assert "NVIDIA_EGL_ROOT" in script
     vendor = json.loads((ROOT / "fast_wam" / "runtime" / "10_nvidia.json").read_text())

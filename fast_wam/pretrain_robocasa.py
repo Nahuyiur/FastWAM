@@ -14,6 +14,7 @@ from megatron.training.arguments import parse_and_validate_args
 
 from . import pretrain as common
 from .train.robocasa_data import build_robocasa_datasets
+from .train.optimizer_contract import all_parameter_adamw_config
 
 
 def robocasa_extra_args(parser):
@@ -118,6 +119,27 @@ def _patch_torch_optimizer_dcp_load() -> None:
     DistributedOptimizer._fast_wam_torch_load_patch = True
 
 
+def _patch_baseline_adamw_weight_decay() -> None:
+    """Match the baseline's one-group AdamW policy for all trainable tensors."""
+
+    import megatron.training.training as training_module
+
+    current = training_module.get_megatron_optimizer_config
+    if getattr(current, "_fast_wam_all_parameter_adamw", False):
+        return
+    wrapped = all_parameter_adamw_config(current)
+    wrapped._fast_wam_all_parameter_adamw = True
+    training_module.get_megatron_optimizer_config = wrapped
+
+    config, overrides = wrapped(common.get_args())
+    if not config.decoupled_weight_decay or overrides != {}:
+        raise RuntimeError("Failed to install the baseline AdamW parameter-group contract")
+    print_rank_0(
+        "[Fast-WAM][RoboCasa] optimizer contract: AdamW weight_decay applies "
+        "to every trainable parameter"
+    )
+
+
 if __name__ == "__main__":
     train_valid_test_datasets_provider.is_distributed = True
     pretrain_fn, store = inprocess_restart.maybe_wrap_for_inprocess_restart(pretrain)
@@ -126,6 +148,7 @@ if __name__ == "__main__":
         args_defaults={"tokenizer_type": "NullTokenizer"},
     )
     _patch_torch_optimizer_dcp_load()
+    _patch_baseline_adamw_weight_decay()
     original_pretrain = pretrain_fn
 
     @functools.wraps(original_pretrain)

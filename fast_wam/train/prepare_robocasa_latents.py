@@ -97,6 +97,7 @@ def main() -> None:
         "num_samples": num_samples,
         "sample_shape": list(LATENT_SHAPE),
         "dtype": "bfloat16",
+        "encoding_batch_size": args.batch_size,
         "samples_per_shard": args.samples_per_shard,
         "episode_manifest": str(manifest_path),
         "episode_manifest_sha256": digests[0],
