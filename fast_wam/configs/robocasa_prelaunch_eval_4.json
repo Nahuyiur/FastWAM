@@ -1,0 +1,22 @@
+{
+  "periodic_shard_0": {
+    "split": "target",
+    "num_trials": 1,
+    "tasks": ["OpenCabinet"]
+  },
+  "periodic_shard_1": {
+    "split": "target",
+    "num_trials": 1,
+    "tasks": ["OpenDrawer"]
+  },
+  "periodic_shard_2": {
+    "split": "target",
+    "num_trials": 1,
+    "tasks": ["CloseFridge"]
+  },
+  "periodic_shard_3": {
+    "split": "target",
+    "num_trials": 1,
+    "tasks": ["PickPlaceCounterToCabinet"]
+  }
+}
